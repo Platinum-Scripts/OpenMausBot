@@ -107,7 +107,7 @@ build(){ # -> BUILD_DIR
   sudo -u maus bash -c ". /home/maus/src/build-env.sh; cd /tmp; node --check $BUILD_DIR/dist-server/index.js && node --check $BUILD_DIR/dist-server/openmausbot.js && test -s $BUILD_DIR/dist/index.html && test -d $BUILD_DIR/node_modules/@1password/sdk" >>$RLOG 2>&1 || { log "staged bundle check failed"; return 1; }
   log "tests OK (smoke-packaged-server boots the bundle, MCP, doctor, backup, enterprise; staged CLI runs)"; return 0; }
 deploy_build(){ # dir
-  PREV_BUILD=$(readlink -f $B/current 2>/dev/null || echo npm); export PREV_BUILD
+  PREV_BUILD=$( [ -L $B/current ] && readlink -f $B/current || echo npm ); export PREV_BUILD
   counts; log "expect bots=$EXP_BOTS routines=$EXP_ROUT; prev=$PREV_BUILD"
   wait_quiet || { status deferred 1 "built $1 but turns never went quiet in ${QUIET_MAX_MIN}m; next run deploys it"; log "deferred"; exit 0; }
   status switching 1 "restarting onto $1"; switch_to "$1"
