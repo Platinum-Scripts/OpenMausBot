@@ -1,0 +1,2 @@
+# ops hotfix 2026-10-26: OpenMausBot routine auto-retry watchdog (owner API only; never interrupts turns)
+*/2 * * * * root /usr/bin/flock -n /run/omb-retry-watchdog.lock /usr/bin/python3 /opt/omb-ops/omb-retry-watchdog.py >/dev/null 2>&1
