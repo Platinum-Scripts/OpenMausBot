@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronLeft, Loader2, Menu } from "lucide-react";
 import { CLOUD_LINK_SETTINGS, openBot, StoreProvider, useStore } from "@/state/store";
 import { useShowThreads } from "@/lib/thread-preferences";
+import { singleChatFeedEnabled } from "@/lib/feature-flags";
+import { setSingleChatFeedMode } from "@/lib/single-chat-feed";
 import { addBot } from "@/lib/add-bot";
 import { useWelcomeViewer, WelcomeGate } from "@/components/onboarding/WelcomeGate";
 import { MausBotWelcome } from "@/components/MausBotWelcome";
@@ -62,6 +64,9 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
   useTeamChats(state.config);
   useTeamPeopleLoader(state.config, state.bots.map((bot) => `${bot.id}:${bot.reportsTo ?? ""}:${bot.activity ?? ""}:${(bot.tasks ?? []).filter((task) => task.activity === "waiting-on-you").length}`).join("|"));
   const showThreads = useShowThreads();
+  // Mirrored for thread navigation outside React. A child's effect, so it is set before the store opens the first bot.
+  const singleChatFeed = singleChatFeedEnabled(state.config);
+  useEffect(() => setSingleChatFeedMode(singleChatFeed), [singleChatFeed]);
   const { capabilities } = useDesktopCapabilities();
   const captionChrome = useCaptionChrome();
   const unreadCount =

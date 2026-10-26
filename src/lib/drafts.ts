@@ -289,6 +289,11 @@ function setStoredSendId(store: Store, draftId: string, send: RestoredSend | und
   }
 }
 
+export function hasComposerDraft(id: string): boolean {
+  const store = getStore();
+  return getDraft(store, id).trim() !== "" || getDraftAttachments(store, id).length > 0;
+}
+
 export function restoreComposerDraft(id: string, draft: DraftRestore): void {
   const store = getStore();
   setDraft(store, id, draft.text);

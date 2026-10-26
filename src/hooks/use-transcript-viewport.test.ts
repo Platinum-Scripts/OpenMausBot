@@ -551,4 +551,22 @@ describe("transcript viewport", () => {
 
     expect(dispatched).toEqual([{ type: "loadOlderMessages", threadId: "thread" }]);
   });
+
+  it("still loads older messages after a handler from before the last expansion fires", () => {
+    const view = mount({ messages: rows(180), hasMore: true });
+    expect(view.current.hiddenCount).toBe(60);
+    const stale = view.current.scrollHandlers;
+    const scrollUp = (handlers: typeof stale) => () => {
+      scroller.scrollTop = 0;
+      handlers.onWheel({ deltaY: -40 } as never);
+    };
+
+    view.act(scrollUp(view.current.scrollHandlers));
+    expect(view.current.hiddenCount).toBe(0);
+    view.act(scrollUp(stale));
+    expect(view.current.hiddenCount).toBe(0);
+    view.act(scrollUp(view.current.scrollHandlers));
+
+    expect(dispatched).toEqual([{ type: "loadOlderMessages", threadId: "thread" }]);
+  });
 });

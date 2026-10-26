@@ -50,6 +50,8 @@ import { isCancelledTranscriptRow } from "../../shared/client-cancel";
 import { BotAvatar } from "./Avatar";
 import { TurnPresence } from "./TurnPresence";
 import { showToolCallsEnabled, skillAuthoringEnabled } from "@/lib/feature-flags";
+import { useChatFeed, useShownSegments } from "@/hooks/use-single-chat-feed";
+import { DaySeparator, TopicDivider } from "./TranscriptDividers";
 import { normalizeState, stateForBot } from "@/lib/mascot";
 import { peerLine, peerRequest, type PeerLine } from "@/lib/peer-message";
 import { showWorkingDots } from "@/lib/turn-tail";
@@ -114,7 +116,7 @@ import { useUnreadDivider } from "@/hooks/use-unread-divider";
 import { NewMessagesDivider } from "./NewMessagesDivider";
 import { unreadMessageIds } from "@/lib/unread-divider";
 import { appendComposerDraft, appendDraftAttachments, useReplyDraft } from "@/lib/drafts";
-import { dayLabel, localDay, transcriptLookups, type TranscriptLookups } from "@/lib/transcript-derivations";
+import { localDay, transcriptLookups, type TranscriptLookups } from "@/lib/transcript-derivations";
 import { splitTranscriptCitations, type CitationAttachment } from "@/lib/citations";
 import { EmptyChat } from "./ChatEmptyState";
 import { PinnedBanner } from "./ChatPinnedBanner";
@@ -151,6 +153,7 @@ interface ChatRows {
   onBranch: (messageId: string) => boolean;
   conversational: boolean; simple?: boolean; canReact: boolean;
   openedAt: number;
+  readOnly?: boolean; // another conversation's lines in a single chat feed: no edit or reply, which act on the open one
 }
 
 const ChatRowsContext = createContext<ChatRows | null>(null);
@@ -169,14 +172,6 @@ function useDrawnBots(bots: readonly Bot[]): readonly Bot[] {
   const cache = useRef({ signature, bots });
   if (cache.current.signature !== signature) cache.current = { signature, bots };
   return cache.current.bots;
-}
-
-function DaySeparator({ at, today }: { at: number; today: number }) {
-  return (
-    <div className="py-3 text-center text-[13px] text-ink-secondary">
-      {dayLabel(at, today)} {formatTime(at)}
-    </div>
-  );
 }
 
 export function ErrorRow({
@@ -395,7 +390,7 @@ const Bubble = memo(function Bubble({
   replyTarget?: Message;
   onReply: (message: Message) => void;
 }) {
-  const { botId, threadId, botName, voiceId, tts, localVoice, busy, bots, mentionPeers, mentionPerson, focus, dispatch, onBranch, bubbleStyle, conversational, simple, canReact, openedAt, speakerViewer } = useChatRows();
+  const { botId, threadId, botName, voiceId, tts, localVoice, busy, bots, mentionPeers, mentionPerson, focus, dispatch, onBranch, bubbleStyle, conversational, simple, canReact, openedAt, speakerViewer, readOnly } = useChatRows();
   const remoteClient = window.ogb?.remoteClient?.active === true;
   const peer = peerLine(message) ?? peerRequest(message, botId);
   const user = message.role === "user" && !peer;
@@ -478,12 +473,12 @@ const Bubble = memo(function Bubble({
             side="user"
             menu={userMessageMenu({
               messageId: message.id,
-              onEdit: message.kind === "text" && !webhookView && !hasAttachments && !busy && !message.id.startsWith("optimistic-")
+              onEdit: !readOnly && message.kind === "text" && !webhookView && !hasAttachments && !busy && !message.id.startsWith("optimistic-")
                 ? () => onStartEdit(message.id) : undefined,
               pin: remoteClient ? undefined : { pinned, onToggle: togglePin },
             })}
           >
-            <ReplyAction onReply={() => onReply(message)} />
+            {!readOnly && <ReplyAction onReply={() => onReply(message)} />}
             {Boolean(visibleText.trim()) && <CopyButton text={visibleText} className={messageActionClass} />}
           </MessageActions>
         )}
@@ -593,7 +588,7 @@ const Bubble = memo(function Bubble({
         </div>
         {!user && (
           <MessageActions side="bot" forceOpen={viewRaw || speaking} menu={botMenu}>
-            <ReplyAction onReply={() => onReply(message)} />
+            {!readOnly && <ReplyAction onReply={() => onReply(message)} />}
             {canReact && !peer && <ReactAction threadId={threadId} message={message} />}
             {text && <CopyButton text={text} className={messageActionClass} />}
             {text && viewRaw && <RawToggleAction active onToggle={() => setViewRaw(false)} className={messageActionClass} />}
@@ -699,6 +694,7 @@ const MessagesList = memo(function MessagesList({
   onSubmitEdit,
   onRegenerate,
   onReply,
+  previousAt,
 }: {
   messages: Message[];
   transcript: Message[];
@@ -718,6 +714,7 @@ const MessagesList = memo(function MessagesList({
   onSubmitEdit: (id: string, text: string) => void;
   onRegenerate: () => void;
   onReply: (message: Message) => void;
+  previousAt?: number; // when the line above was said: a single chat feed draws one list per conversation
 }) {
   const { botId, threadId, botName, busy, hasMore, focus, showToolCalls, locale } = useChatRows();
   const items = useMemo(() => groupTranscript(messages), [messages, locale]);
@@ -740,7 +737,7 @@ const MessagesList = memo(function MessagesList({
         const previous = items[i - 1];
         const prev = previous && (previous.kind === "message" ? previous.message : previous.messages.at(-1));
         const first = item.kind === "message" ? item.message : item.messages[0];
-        const newDay = !prev || localDay(prev.at) !== localDay(first.at);
+        const prevAt = prev?.at ?? previousAt, newDay = prevAt === undefined || localDay(prevAt) !== localDay(first.at);
         const divider = dividerAbove(item.kind === "message" ? [item.message] : item.messages);
         if (item.kind === "turn") {
           return (
@@ -910,6 +907,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
   const { messages: allMessages, activeLeafId } = bot;
   const messages = useMemo(() => visibleMessages({ messages: allMessages, activeLeafId }), [allMessages, activeLeafId]);
   const lookups = useMemo(() => transcriptLookups(allMessages, messages), [allMessages, messages]);
+  const feed = useChatFeed({ bot: profile, config: state.config, live: messages, busy: Boolean(bot.busy), hasMore: bot.hasMore, dispatch });
   const recordedRun = useMemo(() => runSteps(messages), [messages]);
   const recordedRunCounts = runSummary(recordedRun);
   const engineSupportsAgents = Boolean(
@@ -937,9 +935,8 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
   } = useTranscriptViewport({
     ownerId: bot.id,
     threadId: bot.threadId,
-    messages,
     pinOn: [bot.busy, composerDock.pad],
-    hasMore: bot.hasMore,
+    ...feed.viewport,
   });
 
   const lastBotTextId = useMemo(
@@ -970,6 +967,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
     () => ({ botId: bot.id, threadId: bot.threadId, botName: bot.name, voiceId: bot.voice, tts, localVoice, busy, hasMore, bots, mentionPeers, mentionPerson: { profileName: state.config?.profile?.name }, focus, showToolCalls, locale, dispatch, onBranch, bubbleStyle, conversational: isConversational(bot.replyStyle), simple: !advanced, canReact: canWrite !== false, openedAt, speakerViewer }),
     [bot.id, bot.threadId, bot.name, bot.voice, tts, localVoice, busy, hasMore, bots, mentionPeers, state.config?.profile?.name, focus, showToolCalls, locale, dispatch, onBranch, bubbleStyle, bot.replyStyle, advanced, canWrite, openedAt, speakerViewer],
   );
+  const segments = useShownSegments({ feed: feed.rows, windowed: windowedMessages, threadId: bot.threadId, tasks: profile.tasks, rows, transcript: messages, lookups });
   const currentTask = bot.tasks?.find((task) => task.threadId === bot.threadId), place = effectivePlace(bot, currentTask), team = state.config?.team, privateChat = Boolean(team) && currentTask?.private === true, sharedChat = Boolean(team) && !privateChat;
 
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -1123,10 +1121,10 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
               {chiefOfStaffBadge(bot)}
               <ChevronRight size={14} aria-hidden="true" className="-ml-2.5 w-0 shrink-0 text-ink-secondary opacity-0 transition-[width,margin,opacity] duration-150 group-hover:ml-0 group-hover:w-3.5 group-hover:opacity-100 group-focus-visible:ml-0 group-focus-visible:w-3.5 group-focus-visible:opacity-100" />
             </button>
-          )}{!advanced && !remoteClient && <ChatHeadConversation bot={profile} />}
+          )}{!advanced && !remoteClient && !feed.on && <ChatHeadConversation bot={profile} />}
           {!phone && <ChatHeadRole bot={bot} />}<span role="status" className="sr-only" data-chathead-status>{bot.busy ? t("sidebar.preview.working") : ""}</span>{privateChat && <TeamPrivateHeader />}{sharedChat && team && <TeamSharedHeader team={team} />}
           {!bot.busy && bot.waitingForTeammates && <span className="truncate text-[12px] text-ink-secondary" role="status">Teammates working</span>}
-          {(advanced || remoteClient) && awayFromMainThread(profile, showThreads) && (
+          {!feed.on && (advanced || remoteClient) && awayFromMainThread(profile, showThreads) && (
             <button
               type="button"
               data-chathead-back
@@ -1176,7 +1174,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
         </div>
       </div>
 
-      {(advanced || remoteClient) && <BotActivityPicker bot={bot} />}{privateChat && team && <TeamPrivateFirstLine key={team.id} team={team} />}
+      {!feed.on && (advanced || remoteClient) && <BotActivityPicker bot={bot} />}{privateChat && team && <TeamPrivateFirstLine key={team.id} team={team} />}
       {routineExecution && <div className="mx-5 mb-2 flex flex-wrap items-center gap-2 rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[11.5px] text-ink-secondary">
         <span className="min-w-0 flex-1 truncate">{t("routines.executionDetails", { name: routineExecution.routineName })}</span>
         {canOpenResults && resultsThreadId && <button type="button" onClick={() => openNotificationTarget(dispatch, { botId: bot.id, threadId: resultsThreadId }, state, showThreads)} className="rounded px-2 py-1 text-accent hover:bg-raised">{t("routines.results.back")}</button>}
@@ -1222,32 +1220,33 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
               <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-accent border-t-transparent" />
               <span>{t("chat.loadingEarlier")}</span>
             </div>
-          ) : hiddenCount > 0 || bot.hasMore ? (
+          ) : hiddenCount > 0 || feed.viewport.hasMore ? (
             <div ref={topSentinelRef} className="h-2 w-full pointer-events-none" aria-hidden="true" />
           ) : null}
           {windowedMessages.length === 0 && !bot.busy && <EmptyChat bot={bot} />}
-          <ChatRowsContext.Provider value={rows}>
-            <MessagesList
-              messages={windowedMessages}
-              transcript={messages}
-              lookups={lookups}
-              place={place}
-              pinnedMessageId={bot.pinnedMessageId}
-              today={localDay(Date.now())}
-              editingId={editingId}
-              lastBotTextId={lastBotTextId}
-              emergingId={popping}
-              canRetryLast={!bot.busy && Boolean(lastUserMessage)}
-              engine={state.instances.find((i) => i.instanceId === bot.modelSelection.instanceId)}
-              unreadDividerId={unreadDivider.messageId}
-              unreadDividerFading={unreadDivider.fading}
-              onStartEdit={startEdit}
-              onCancelEdit={cancelEdit}
-              onSubmitEdit={submitEdit}
-              onRegenerate={regenerate}
-              onReply={selectReply}
-            />
-          </ChatRowsContext.Provider>
+          {segments.map((segment) => (
+            <ChatRowsContext.Provider key={segment.key} value={segment.rows ?? rows}>
+              {segment.title && <TopicDivider title={segment.title} />}
+              <MessagesList
+                {...segment.list}
+                place={place}
+                pinnedMessageId={segment.live ? bot.pinnedMessageId : undefined}
+                today={localDay(Date.now())}
+                editingId={segment.live ? editingId : null}
+                lastBotTextId={segment.live ? lastBotTextId : undefined}
+                emergingId={segment.live ? popping : null}
+                canRetryLast={segment.live && !bot.busy && Boolean(lastUserMessage)}
+                engine={state.instances.find((i) => i.instanceId === bot.modelSelection.instanceId)}
+                unreadDividerId={segment.live ? unreadDivider.messageId : null}
+                unreadDividerFading={unreadDivider.fading}
+                onStartEdit={startEdit}
+                onCancelEdit={cancelEdit}
+                onSubmitEdit={submitEdit}
+                onRegenerate={regenerate}
+                onReply={selectReply}
+              />
+            </ChatRowsContext.Provider>
+          ))}
           {laterCount > 0 && (
             <div className="flex justify-center">
               <button

@@ -6311,5 +6311,9 @@
   "usageMeter.err.unavailable": "Your plan can't be changed from the app right now. Nothing was charged. Open your Plan page to see your options.",
   "usageMeter.err.priceChanged": "The price changed since you looked, so nothing was charged. Choose Upgrade to see the new price.",
   "usageMeter.err.rateLimited": "Too many tries. Wait a few minutes, then try again.",
-  "usageMeter.err.failed": "We couldn't change your plan. Nothing was charged. Try again in a minute."
+  "usageMeter.err.failed": "We couldn't change your plan. Nothing was charged. Try again in a minute.",
+  "settings.singleChatFeed.title": "Single chat feed",
+  "settings.singleChatFeed.subtitle": "Show every topic in one continuous history per bot. What you send goes to the bot's newest topic. This applies to everyone using this server.",
+  "settings.singleChatFeed.error": "Could not save the single chat feed setting.",
+  "chat.feed.topicAria": "Topic: {title}"
 }

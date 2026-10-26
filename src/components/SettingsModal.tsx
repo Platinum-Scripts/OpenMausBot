@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Archive, CircleUser, Cloud, Coins, Download, FlaskConical, KeyRound, LockKeyhole, Monitor, Palette, ScrollText, Search, Sparkles, TabletSmartphone, Terminal, User, Users, X, Building2, Zap, BookOpen } from "lucide-react";
 import { api, useStore, type AppSettingsSection, type ConfigStatus } from "@/state/store";
 import { builtInBrowserEnabled, showToolCallsEnabled, skillAuthoringEnabled, skillsLibraryEnabled } from "@/lib/feature-flags";
+import { SingleChatFeedRow } from "./SingleChatFeedRow";
 import { localeChoices, type LocaleKey } from "@/locales";
 import { t } from "@/lib/i18n";
 import { withTourReset } from "@/lib/guided-tour";
@@ -713,6 +714,7 @@ export function SettingsModal() {
             <SendKeyRow />
             <SidebarDensityRow />
             {advanced && <SidebarToolsLayoutRow />}
+            {!remoteActive && <SingleChatFeedRow />}
             {advanced && <ShowThreadsRow />}
             <PinnedCirclesRow />
             <UniversalPinsRow />

@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 
 import { useAdvancedMode } from "./interface-mode";
+import { useSingleChatFeedMode } from "./single-chat-feed";
 
 export const SHOW_THREADS_KEY = "omb-show-threads";
 
@@ -61,7 +62,9 @@ export function useShowThreadsChoice(): boolean {
   return useSyncExternalStore(subscribe, showThreads, () => true);
 }
 
+/** Off under the single chat feed too: its bot is one history, so nothing navigates by thread. */
 export function useShowThreads(): boolean {
   const chosen = useShowThreadsChoice();
-  return useAdvancedMode() && chosen;
+  const feed = useSingleChatFeedMode();
+  return useAdvancedMode() && chosen && !feed;
 }

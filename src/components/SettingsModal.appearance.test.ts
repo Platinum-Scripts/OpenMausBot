@@ -169,6 +169,25 @@ describe("Settings → Appearance", () => {
     expect(html).not.toContain("Maximum turn length");
   });
 
+  it.each([true, false])("offers the single chat feed off by default and saves it on the server (Advanced %s)", async (advanced) => {
+    fixture.advancedMode = advanced;
+    const saved = { features: { singleChatFeed: true } };
+    fixture.api.mockResolvedValue(saved);
+    const html = render();
+    expect(html).toContain('aria-label="Single chat feed"');
+    expect(html).toContain("Show every topic in one continuous history per bot");
+    const toggle = fixture.switches.find((props) => props["aria-label"] === "Single chat feed")!;
+    expect(toggle.checked).toBe(false);
+    toggle.onClick!({} as never);
+    expect(fixture.api).toHaveBeenCalledWith("/api/config", { method: "PATCH", body: JSON.stringify({ features: { singleChatFeed: true } }) });
+    await vi.waitFor(() => expect(fixture.dispatch).toHaveBeenCalledWith({ type: "configStatus", config: saved }));
+  });
+
+  it("does not offer the single chat feed to a paired remote client, which cannot change server settings", () => {
+    vi.stubGlobal("window", { ogb: { remoteClient: { active: true } } });
+    expect(render()).not.toContain('aria-label="Single chat feed"');
+  });
+
   it.each([true, false])("only updates the local preference when the switch is %s", (enabled) => {
     fixture.showThreads = enabled;
     render();

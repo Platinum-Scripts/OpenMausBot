@@ -10,6 +10,7 @@ import {
   skillReviewSteps,
   type AppConfig,
 } from "../config.ts";
+import { singleChatFeedEnabled } from "../../shared/single-chat-feed.ts";
 import { skillsLibraryEnabled } from "../skill-library.ts";
 import { claudeUserSkillsEnabled } from "../turn-settings.ts";
 import { parallelRoomJobsEnabled } from "./room-jobs.ts";
@@ -36,5 +37,6 @@ export function featureStatus({ cfg, skillsHost }: FeatureStatusDeps) {
     roomMemoryCapture: roomMemoryCaptureEnabled(cfg),
     parallelRoomJobs: parallelRoomJobsEnabled(cfg),
     llmThreadTitles: llmThreadTitlesEnabled(cfg),
+    singleChatFeed: singleChatFeedEnabled(cfg),
   };
 }

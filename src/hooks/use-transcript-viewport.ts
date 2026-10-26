@@ -34,6 +34,8 @@ export function useTranscriptViewport<T extends { id: string; role?: string }>({
   pinOn,
   transcriptShown = true,
   hasMore = false,
+  windowKey,
+  older,
 }: {
   ownerId: string;
   threadId: string;
@@ -41,6 +43,10 @@ export function useTranscriptViewport<T extends { id: string; role?: string }>({
   pinOn: DependencyList;
   transcriptShown?: boolean;
   hasMore?: boolean;
+  /** Keeps the scroll window across thread switches; defaults to owner and thread. */
+  windowKey?: string;
+  /** Older history from somewhere other than the thread's own pages. */
+  older?: { pending: boolean; load: () => void };
 }) {
   const { state, dispatch } = useStore();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -53,7 +59,7 @@ export function useTranscriptViewport<T extends { id: string; role?: string }>({
   const previousScrollTop = useRef(0);
   const touchY = useRef(0);
 
-  const transcriptKey = `${ownerId}:${threadId}`;
+  const transcriptKey = windowKey ?? `${ownerId}:${threadId}`;
   const tailStart = tailWindowStart(messages.length);
   const [transcriptWindow, setTranscriptWindow] = useState<{
     key: string;
@@ -150,29 +156,38 @@ export function useTranscriptViewport<T extends { id: string; role?: string }>({
     const nextEnd = Math.min(messages.length, endIndex + TRANSCRIPT_WINDOW_SIZE);
     setTranscriptWindow((w) => ({ ...w, end: nextEnd >= messages.length ? null : nextEnd }));
   };
-  const olderPending = Boolean(state.loadingOlder[threadId]);
+  const olderPending = older ? older.pending : Boolean(state.loadingOlder[threadId]);
+  const requestOlder = useCallback(
+    () => older ? older.load() : dispatch({ type: "loadOlderMessages", threadId }),
+    [older, dispatch, threadId],
+  );
   const loadOlder = () => {
     holdRowForPrepend();
-    dispatch({ type: "loadOlderMessages", threadId });
+    requestOlder();
   };
 
   useEffect(() => {
     if (!olderPending) expandingRef.current = false;
   }, [olderPending]);
 
+  const committedStart = useRef(startIndex);
+  useLayoutEffect(() => {
+    committedStart.current = startIndex;
+  }, [startIndex]);
   const triggerAutoEarlier = useCallback(() => {
     if (expandingRef.current) return;
-    if (hiddenCount > 0) {
+    const shownFrom = committedStart.current;
+    if (shownFrom > 0) {
       expandingRef.current = true;
       holdRowForPrepend();
-      const start = expandWindowStart(startIndex);
+      const start = expandWindowStart(shownFrom);
       setTranscriptWindow((w) => ({ ...w, start }));
     } else if (hasMore && !olderPending) {
       expandingRef.current = true;
       holdRowForPrepend();
-      dispatch({ type: "loadOlderMessages", threadId });
+      requestOlder();
     }
-  }, [hiddenCount, startIndex, hasMore, olderPending, threadId, dispatch, transcriptKey]);
+  }, [hasMore, olderPending, requestOlder, transcriptKey]);
 
   useEffect(() => {
     const sentinel = topSentinelRef.current;

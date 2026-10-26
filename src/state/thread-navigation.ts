@@ -1,4 +1,5 @@
 import type { NotificationTarget } from "@/lib/notify";
+import { singleChatFeedMode, singleChatFeedTarget, type SingleChatFeedTask } from "@/lib/single-chat-feed";
 import type { Action, AppState } from "./store";
 import { openOwnTeamChat } from "./team-chats";
 
@@ -6,7 +7,7 @@ interface NotificationThreadOwner {
   id: string;
   threadId: string;
   mainThreadId?: string;
-  tasks?: Array<{ threadId: string }>;
+  tasks?: SingleChatFeedTask[];
 }
 
 interface NotificationRoutingState {
@@ -59,6 +60,7 @@ export function openNotificationTarget(
 }
 
 export function botOpensTo(bot: Pick<NotificationThreadOwner, "threadId" | "mainThreadId" | "tasks">, threadsShown: boolean): string {
+  if (singleChatFeedMode()) return singleChatFeedTarget(bot);
   return !threadsShown && bot.mainThreadId && bot.tasks?.some((task) => task.threadId === bot.mainThreadId)
     ? bot.mainThreadId : bot.threadId;
 }

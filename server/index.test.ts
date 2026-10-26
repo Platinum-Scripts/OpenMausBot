@@ -9184,10 +9184,34 @@ describe("harness HTTP API", () => {
     }
   });
 
+  it("serves one bot's conversations as one feed, newest last, for a single chat feed", async () => {
+    const created = await api("POST", "/api/bots", { modelSelection: { instanceId: "claude", model: "claude-sonnet-5" }, requireAvailableModel: true });
+    expect(created.status).toBe(201);
+    const bot = created.body.bot;
+    try {
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "in the main chat", threadId: bot.threadId })).status).toBe(202);
+      const topic = await api("POST", `/api/bots/${bot.id}/tasks`, { title: "Second topic" });
+      expect(topic.status).toBe(201);
+      const topicThread = topic.body.task.threadId;
+      await api("POST", `/api/bots/${bot.id}/interrupt`, { threadId: bot.threadId });
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "in the second topic", threadId: topicThread })).status).toBe(202);
+      await expect.poll(async () => {
+        const feed = await api("GET", `/api/bots/${bot.id}/feed?limit=200`);
+        const said = feed.body.items.filter((item: { message: { role: string } }) => item.message.role === "user")
+          .map((item: { threadId: string; message: { text: string } }) => [item.threadId, item.message.text]);
+        return said;
+      }, { timeout: 5_000 }).toEqual([[bot.threadId, "in the main chat"], [topicThread, "in the second topic"]]);
+      expect((await api("GET", "/api/bots/no-such-bot/feed")).status).toBe(404);
+    } finally {
+      await api("POST", `/api/bots/${bot.id}/interrupt`, {}).catch(() => undefined);
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
   it("keeps skill authoring on by default and persists an explicit opt-out", async () => {
     const before = await api("GET", "/api/config");
     expect(before.status).toBe(200);
-    expect(before.body.features).toEqual({ browser: false, skillAuthoring: true, skillReview: false, skillReviewSteps: 10, skillsLibrary: false, shareLearnedSkills: "off", showToolCalls: false, sharedComputers: false, claudeUserMcp: false, claudeUserSkills: false, autoRecall: true, roomMemoryCapture: false, parallelRoomJobs: false, llmThreadTitles: true });
+    expect(before.body.features).toEqual({ browser: false, skillAuthoring: true, skillReview: false, skillReviewSteps: 10, skillsLibrary: false, shareLearnedSkills: "off", showToolCalls: false, sharedComputers: false, claudeUserMcp: false, claudeUserSkills: false, autoRecall: true, roomMemoryCapture: false, parallelRoomJobs: false, llmThreadTitles: true, singleChatFeed: false });
     const untouched = JSON.parse(readFileSync(join(home, ".openmausbot", "config.json"), "utf8"));
     expect(untouched.features?.skillAuthoring).toBeUndefined();
     expect(untouched.features?.skillReview).toBeUndefined();
@@ -9197,7 +9221,7 @@ describe("harness HTTP API", () => {
       features: { skillAuthoring: false },
     });
     expect(saved.status).toBe(200);
-    expect(saved.body.features).toEqual({ browser: false, skillAuthoring: false, skillReview: false, skillReviewSteps: 10, skillsLibrary: false, shareLearnedSkills: "off", showToolCalls: false, sharedComputers: false, claudeUserMcp: false, claudeUserSkills: false, autoRecall: true, roomMemoryCapture: false, parallelRoomJobs: false, llmThreadTitles: true });
+    expect(saved.body.features).toEqual({ browser: false, skillAuthoring: false, skillReview: false, skillReviewSteps: 10, skillsLibrary: false, shareLearnedSkills: "off", showToolCalls: false, sharedComputers: false, claudeUserMcp: false, claudeUserSkills: false, autoRecall: true, roomMemoryCapture: false, parallelRoomJobs: false, llmThreadTitles: true, singleChatFeed: false });
 
     const disk = JSON.parse(readFileSync(join(home, ".openmausbot", "config.json"), "utf8"));
     // Earlier browser coverage may have persisted its own toggle: opting out must preserve sibling settings.
@@ -9205,7 +9229,13 @@ describe("harness HTTP API", () => {
 
     const tools = await api("PATCH", "/api/config", { features: { showToolCalls: true } });
     expect(tools.status).toBe(200);
-    expect(tools.body.features).toEqual({ browser: false, skillAuthoring: false, skillReview: false, skillReviewSteps: 10, skillsLibrary: false, shareLearnedSkills: "off", showToolCalls: true, sharedComputers: false, claudeUserMcp: false, claudeUserSkills: false, autoRecall: true, roomMemoryCapture: false, parallelRoomJobs: false, llmThreadTitles: true });
+    expect(tools.body.features).toEqual({ browser: false, skillAuthoring: false, skillReview: false, skillReviewSteps: 10, skillsLibrary: false, shareLearnedSkills: "off", showToolCalls: true, sharedComputers: false, claudeUserMcp: false, claudeUserSkills: false, autoRecall: true, roomMemoryCapture: false, parallelRoomJobs: false, llmThreadTitles: true, singleChatFeed: false });
+
+    const feed = await api("PATCH", "/api/config", { features: { singleChatFeed: true } });
+    expect(feed.status).toBe(200);
+    expect(feed.body.features.singleChatFeed).toBe(true);
+    expect(JSON.parse(readFileSync(join(home, ".openmausbot", "config.json"), "utf8")).features.singleChatFeed).toBe(true);
+    expect((await api("PATCH", "/api/config", { features: { singleChatFeed: false } })).body.features.singleChatFeed).toBe(false);
 
     const bot = (await api("POST", "/api/bots", {})).body.bot;
     try {
