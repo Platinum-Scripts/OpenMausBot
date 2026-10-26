@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { orderFeed, type FeedEntry, type WireFeedPage } from "../../shared/single-chat-feed";
 import { useHasComposerDraft } from "@/lib/drafts";
 import { singleChatFeedEnabled, type FeatureFlagConfig } from "@/lib/feature-flags";
-import { feedRows, mergeFeedPage, restartsHold, singleChatFeedTarget, singleChatFeedThreads, type FeedRow, type HeldFeed } from "@/lib/single-chat-feed";
+import { feedRows, mergeFeedPage, replacesHold, singleChatFeedTarget, singleChatFeedThreads, type FeedRow, type HeldFeed } from "@/lib/single-chat-feed";
 import { api, ApiError, MESSAGE_PAGE_SIZE, type Action, type Bot, type Message } from "@/state/store";
 
 /** Each direction loads and fails on its own. `olderRequest`: the older page in flight; a reply to any other request
@@ -100,8 +100,8 @@ export function useSingleChatFeed(bot: Bot, on: boolean, live: readonly Message[
         if (!current) return;
         const before = feeds.get(bot.id);
         const merged = mergeFeedPage(before, page, "newest");
-        // A restarted hold has a new oldest line, so an older page asked for from the old one no longer fits.
-        const keep = before && !restartsHold(before, page) ? before : undefined;
+        // A replaced hold has a new oldest line (or none to page from), so an older page asked for before no longer fits.
+        const keep = before && !replacesHold(before, page) ? before : undefined;
         hold(bot.id, { ...merged, olderRequest: keep?.olderRequest, olderFailed: keep?.olderFailed ?? false, newestFailed: false });
       })
       .catch(() => {

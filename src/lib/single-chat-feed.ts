@@ -59,21 +59,26 @@ export function feedSegments(rows: readonly FeedRow[]): FeedSegment[] {
   return segments;
 }
 
-/** A newest page that shares nothing with a non-empty hold leaves a gap behind it, so the hold restarts from it. */
-export function restartsHold(held: HeldFeed, page: WireFeedPage): boolean {
-  if (!page.hasMore || held.entries.length === 0) return false;
+/** A newest page replaces the hold outright when nothing is held (the first load failed), when it is complete (no
+ * `hasMore`: it is the whole history), or when it shares nothing with the hold (that would leave a gap behind it). An
+ * older page asked for from the replaced hold no longer fits it. */
+export function replacesHold(held: HeldFeed, page: WireFeedPage): boolean {
+  if (held.entries.length === 0 || !page.hasMore) return true;
   const keys = new Set(held.entries.map(entryKey));
   return !(page.items as FeedEntry<Message>[]).some((item) => keys.has(entryKey(item)));
 }
 
+/** A newest page is the truth from its oldest line on: a held line newer than that which the page lacks was edited
+ * away or archived, so it goes. Lines from the same moment as the page's oldest are kept (which came first is not
+ * known here). */
 export function mergeFeedPage(held: HeldFeed | undefined, page: WireFeedPage, which: "newest" | "older"): HeldFeed {
   const items = page.items as FeedEntry<Message>[];
-  if (!held || (which === "newest" && restartsHold(held, page))) return { entries: items, hasMore: page.hasMore };
+  if (!held || (which === "newest" && replacesHold(held, page))) return { entries: items, hasMore: page.hasMore };
   const fresh = new Map(items.map((item) => [entryKey(item), item]));
   const kept = held.entries.filter((entry) => !fresh.has(entryKey(entry)));
-  return which === "older"
-    ? { entries: [...items, ...kept], hasMore: page.hasMore }
-    : { entries: [...kept, ...items], hasMore: held.hasMore };
+  if (which === "older") return { entries: [...items, ...kept], hasMore: page.hasMore };
+  const from = items[0]?.message.at ?? Number.POSITIVE_INFINITY;
+  return { entries: [...kept.filter((entry) => entry.message.at <= from), ...items], hasMore: held.hasMore };
 }
 
 let mode = false;

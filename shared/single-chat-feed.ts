@@ -65,6 +65,6 @@ export function orderFeed<M extends { at: number }>(threads: ReadonlyArray<{ thr
 }
 
 /** features.singleChatFeed: off unless true. */
-export function singleChatFeedEnabled(cfg: { features?: { singleChatFeed?: boolean } }): boolean {
-  return cfg.features?.singleChatFeed === true;
+export function singleChatFeedEnabled(cfg: { features?: { singleChatFeed?: boolean } } | null | undefined): boolean {
+  return cfg?.features?.singleChatFeed === true;
 }

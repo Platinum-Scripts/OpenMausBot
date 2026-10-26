@@ -103,6 +103,39 @@ describe("useSingleChatFeed", () => {
     expect(ids()).toEqual(["topic:t1", "main:m2"]);
   });
 
+  it("pages back after the very first load failed and a retry brought a partial page", async () => {
+    fixture.api.mockRejectedValueOnce(new Error("offline"));
+    await show(base);
+    fixture.api.mockResolvedValueOnce(page([["topic", said("t1", 20)]], true));
+    await act(async () => { seen!.retryNewest(); });
+    expect(seen?.hasMore).toBe(true);
+    fixture.api.mockResolvedValueOnce(page([["main", said("m0", 5)]], false));
+    await act(async () => { seen!.loadOlder(); });
+    expect(feedCalls().at(-1)).toBe("/api/bots/bot/feed?limit=200&threadId=topic&before=t1");
+    expect(ids()).toEqual(["main:m0", "topic:t1", "main:m2"]);
+  });
+
+  it("drops another topic's line that a refresh no longer has", async () => {
+    fixture.api.mockResolvedValueOnce(page([["topic", said("t1", 20)], ["topic", said("old", 25)]], true));
+    await show(base);
+    fixture.api.mockResolvedValueOnce(page([["topic", said("t1", 20)], ["topic", said("new", 26)]], true));
+    await show({ ...base, tasks: [base.tasks![0]!, { ...base.tasks![1]!, updatedAt: 26 }] });
+    expect(ids()).toEqual(["topic:t1", "topic:new", "main:m2"]);
+  });
+
+  it("ignores an older page asked for before a complete newest page replaced the hold", async () => {
+    fixture.api.mockResolvedValueOnce(page([["topic", said("t1", 20)]], true));
+    await show(base);
+    const stale = deferred<ReturnType<typeof page>>();
+    fixture.api.mockReturnValueOnce(stale.promise);
+    await act(async () => { seen!.loadOlder(); });
+    fixture.api.mockResolvedValueOnce(page([["topic", said("t1", 20)], ["topic", said("t2", 50)]], false));
+    await show({ ...base, tasks: [base.tasks![0]!, { ...base.tasks![1]!, updatedAt: 50 }] });
+    await act(async () => { stale.resolve(page([["main", said("gone", 5)]])); });
+    expect(ids()).toEqual(["topic:t1", "main:m2", "topic:t2"]);
+    expect(seen?.pending).toBe(false);
+  });
+
   it("retries a failed older page from the same place", async () => {
     fixture.api.mockResolvedValueOnce(page([["topic", said("t1", 20)]], true));
     await show(base);
@@ -143,7 +176,7 @@ describe("useSingleChatFeed", () => {
     fixture.api.mockResolvedValueOnce(page([["main", said("m0", 5)]]));
     await act(async () => { seen!.retryOlder(); });
     expect(seen?.failed).toEqual({ newest: true, older: false });
-    fixture.api.mockResolvedValueOnce(page([["topic", said("t1", 20)], ["topic", said("t2", 50)]]));
+    fixture.api.mockResolvedValueOnce(page([["main", said("m0", 5)], ["topic", said("t1", 20)], ["topic", said("t2", 50)]]));
     await act(async () => { seen!.retryNewest(); });
     expect(seen?.failed).toEqual({ newest: false, older: false });
     expect(ids()).toEqual(["main:m0", "topic:t1", "main:m2", "topic:t2"]);

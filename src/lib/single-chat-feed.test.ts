@@ -79,6 +79,22 @@ describe("mergeFeedPage", () => {
     expect(merged.hasMore).toBe(true);
   });
 
+  it("drops a held line in the newest page's span that the page no longer has (edited away)", () => {
+    const merged = mergeFeedPage({ entries: [...held, entry("b", said("b1", 3))], hasMore: true }, { items: [entry("a", said("a2", 2)), entry("b", said("b2", 4))], hasMore: true }, "newest");
+    expect(merged.entries.map((e) => e.message.id)).toEqual(["a1", "a2", "b2"]);
+  });
+
+  it("takes a complete newest page as the whole history", () => {
+    const merged = mergeFeedPage({ entries: [...held, entry("b", said("b1", 3))], hasMore: false }, { items: [entry("a", said("a2", 2)), entry("b", said("b2", 4))], hasMore: false }, "newest");
+    expect(merged.entries.map((e) => e.message.id)).toEqual(["a2", "b2"]);
+    expect(merged.hasMore).toBe(false);
+  });
+
+  it("takes the first page after a failed load as a fresh start, with its hasMore", () => {
+    const merged = mergeFeedPage({ entries: [], hasMore: false }, { items: [entry("b", said("b9", 90))], hasMore: true }, "newest");
+    expect(merged).toEqual({ entries: [entry("b", said("b9", 90))], hasMore: true });
+  });
+
   it("takes an older page's hasMore", () => {
     const merged = mergeFeedPage({ entries: held, hasMore: true }, { items: [entry("b", said("b0", 0))], hasMore: false }, "older");
     expect(merged.entries.map((e) => e.message.id)).toEqual(["b0", "a1", "a2"]);

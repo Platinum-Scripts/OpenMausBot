@@ -76,9 +76,7 @@ export function llmThreadTitlesEnabled(config: FeatureFlagConfig | null | undefi
   return config?.features?.llmThreadTitles === true;
 }
 
-export function singleChatFeedEnabled(config: FeatureFlagConfig | null | undefined): boolean {
-  return config?.features?.singleChatFeed === true;
-}
+export { singleChatFeedEnabled } from "../../shared/single-chat-feed";
 
 export function skillsLibraryEnabled(config: FeatureFlagConfig | null | undefined): boolean {
   return config?.features?.skillsLibrary === true;

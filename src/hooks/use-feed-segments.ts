@@ -28,7 +28,7 @@ export function useMarkShownTopicsRead(bot: Pick<Bot, "id" | "threadId" | "tasks
   useEffect(() => {
     if (!unread) return;
     for (const threadId of unread.split(",")) {
-      api(`/api/bots/${bot.id}/read`, { method: "POST", body: JSON.stringify({ threadId }) }).catch(() => {});
+      api(`/api/bots/${encodeURIComponent(bot.id)}/read`, { method: "POST", body: JSON.stringify({ threadId }) }).catch(() => {});
     }
   }, [bot.id, unread]);
 }
