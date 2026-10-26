@@ -6,7 +6,21 @@ import type { Bot, InstanceInfo, Message } from "@/state/store";
 const fixture = vi.hoisted(() => {
   vi.stubGlobal("window", {});
   vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {} });
-  return { feed: true, advanced: false, dispatch: vi.fn() };
+  return { feed: true, advanced: false, dispatch: vi.fn(), menus: new Map<string, { regenerate: boolean; pin: boolean; edit?: boolean }>() };
+});
+vi.mock("@/components/message-menu", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@/components/message-menu")>();
+  return {
+    ...original,
+    useBotMessageMenu: (input: Parameters<typeof original.useBotMessageMenu>[0]) => {
+      fixture.menus.set(input.messageId, { regenerate: Boolean(input.onRegenerate), pin: Boolean(input.pin) });
+      return original.useBotMessageMenu(input);
+    },
+    userMessageMenu: (input: Parameters<typeof original.userMessageMenu>[0]) => {
+      fixture.menus.set(input.messageId, { regenerate: false, pin: Boolean(input.pin), edit: Boolean(input.onEdit) });
+      return original.userMessageMenu(input);
+    },
+  };
 });
 vi.mock("@/state/store", async (importOriginal) => {
   const original = await importOriginal<typeof import("@/state/store")>();
@@ -78,8 +92,22 @@ describe("ChatView with the single chat feed on", () => {
     expect(markup.indexOf("data-feed-topic=")).toBeGreaterThan(markup.indexOf("Morning, Pepper"));
   });
 
+  it("offers no regenerate, pin or edit on another topic's lines, which would act on the open one", () => {
+    fixture.menus.clear();
+    const answer = said("t2", 2_500, "Price it at ten", "bot");
+    primeSingleChatFeed(bot.id, {
+      items: [{ threadId: "main", message: hello }, { threadId: "pricing", message: pricing }, { threadId: "pricing", message: answer }, { threadId: "main", message: status }],
+      hasMore: false,
+    });
+    renderToStaticMarkup(createElement(ChatView, { bot }));
+    expect(fixture.menus.get("t2")).toEqual({ regenerate: false, pin: false });
+    expect(fixture.menus.get("t1")).toEqual({ regenerate: false, pin: false, edit: false });
+    expect(fixture.menus.get("m3")).toEqual({ regenerate: true, pin: true });
+    expect(fixture.menus.get("m1")).toMatchObject({ pin: true, edit: true });
+  });
+
   it("offers a retry below the history when its newest lines failed to load", () => {
-    primeSingleChatFeed(bot.id, { items: [{ threadId: "main", message: status }], hasMore: true }, { failed: "newest" });
+    primeSingleChatFeed(bot.id, { items: [{ threadId: "main", message: status }], hasMore: true }, { failed: { newest: true } });
     const markup = renderToStaticMarkup(createElement(ChatView, { bot }));
     expect(markup.match(/data-feed-failed/g)).toHaveLength(1);
     expect(position(markup, "data-feed-failed")).toBeGreaterThan(position(markup, "Hourly factory status: all green"));
@@ -88,10 +116,16 @@ describe("ChatView with the single chat feed on", () => {
   });
 
   it("offers a retry above the history when older lines failed to load", () => {
-    primeSingleChatFeed(bot.id, { items: [{ threadId: "main", message: status }], hasMore: true }, { failed: "older" });
+    primeSingleChatFeed(bot.id, { items: [{ threadId: "main", message: status }], hasMore: true }, { failed: { older: true } });
     const markup = renderToStaticMarkup(createElement(ChatView, { bot }));
     expect(markup.match(/data-feed-failed/g)).toHaveLength(1);
     expect(position(markup, "data-feed-failed")).toBeLessThan(position(markup, "Hourly factory status: all green"));
+  });
+
+  it("offers both retries when the newest and an older page both failed", () => {
+    primeSingleChatFeed(bot.id, { items: [{ threadId: "main", message: status }], hasMore: true }, { failed: { newest: true, older: true } });
+    const markup = renderToStaticMarkup(createElement(ChatView, { bot }));
+    expect(markup.match(/data-feed-failed=/g)).toHaveLength(2);
   });
 
   it("hides the topic dropdown, the way back and the background activity picker", () => {

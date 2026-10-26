@@ -30,12 +30,18 @@ export function singleChatFeedThreads<T extends SingleChatFeedTask>(tasks: reado
   return tasks.filter((task) => !detached(task) && (task.archivedAt === undefined || task.threadId === selectedThreadId));
 }
 
-/** Where a single chat feed's composer sends: the conversation with the newest message, else the open one. */
-export function singleChatFeedTarget(bot: { threadId: string; tasks?: readonly SingleChatFeedTask[] }): string {
+/** Where a single chat feed's composer sends: the conversation with the newest message, else the open one.
+ * `newestAts`: each conversation's newest message time where known; a task's activity stamp can lag it (an imported
+ * or backdated line), so like the server's feed (routes/bot-feed.ts) the later of the two counts. */
+export function singleChatFeedTarget(
+  bot: { threadId: string; tasks?: readonly SingleChatFeedTask[] },
+  newestAts?: ReadonlyMap<string, number>,
+): string {
+  const at = (task: SingleChatFeedTask) => Math.max(recency(task), newestAts?.get(task.threadId) ?? 0);
   let target: SingleChatFeedTask | undefined;
   for (const task of bot.tasks ?? []) {
     if (detached(task) || task.archivedAt !== undefined) continue;
-    const newer = !target || recency(task) > recency(target) || (recency(task) === recency(target) && task.threadId === bot.threadId);
+    const newer = !target || at(task) > at(target) || (at(task) === at(target) && task.threadId === bot.threadId);
     if (newer) target = task;
   }
   return target?.threadId ?? bot.threadId;

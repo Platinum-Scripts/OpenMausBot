@@ -153,7 +153,7 @@ interface ChatRows {
   onBranch: (messageId: string) => boolean;
   conversational: boolean; simple?: boolean; canReact: boolean;
   openedAt: number;
-  readOnly?: boolean; // another conversation's lines in a single chat feed: no edit or reply, which act on the open one
+  readOnly?: boolean; // another conversation's lines in a single chat feed: no edit, reply, regenerate, pin or branch switch
 }
 
 const ChatRowsContext = createContext<ChatRows | null>(null);
@@ -412,8 +412,8 @@ const Bubble = memo(function Bubble({
     canSpeak: message.kind === "text" && !peer,
     viewRaw,
     onToggleRaw: () => setViewRaw((raw) => !raw),
-    onRegenerate: !busy ? onRegenerate : undefined,
-    pin: remoteClient ? undefined : {
+    onRegenerate: !busy && !readOnly ? onRegenerate : undefined,
+    pin: remoteClient || readOnly ? undefined : {
       pinned,
       onToggle: () => dispatch({ type: "updateTask", botId, threadId, patch: { pinnedMessageId: pinned ? "" : message.id } }),
     },
@@ -458,7 +458,7 @@ const Bubble = memo(function Bubble({
   const forks = user && versions ? versions : [message];
   const versionIndex = forks.findIndex((v) => v.id === message.id);
   const switchTo = (v: Message | undefined) => {
-    if (v && !busy && !v.id.startsWith("optimistic-")) dispatch({ type: "switchBranch", botId, threadId, messageId: v.id });
+    if (v && !busy && !readOnly && !v.id.startsWith("optimistic-")) dispatch({ type: "switchBranch", botId, threadId, messageId: v.id });
   };
   const togglePin = () =>
     dispatch({ type: "updateTask", botId, threadId, patch: { pinnedMessageId: pinned ? "" : message.id } });
@@ -475,7 +475,7 @@ const Bubble = memo(function Bubble({
               messageId: message.id,
               onEdit: !readOnly && message.kind === "text" && !webhookView && !hasAttachments && !busy && !message.id.startsWith("optimistic-")
                 ? () => onStartEdit(message.id) : undefined,
-              pin: remoteClient ? undefined : { pinned, onToggle: togglePin },
+              pin: remoteClient || readOnly ? undefined : { pinned, onToggle: togglePin },
             })}
           >
             {!readOnly && <ReplyAction onReply={() => onReply(message)} />}
@@ -1222,7 +1222,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
             </div>
           ) : hiddenCount > 0 || feed.viewport.hasMore ? (
             <div ref={topSentinelRef} className="h-2 w-full pointer-events-none" aria-hidden="true" />
-          ) : feed.failed === "older" ? <FeedLoadFailed onRetry={feed.retry} /> : null}
+          ) : feed.failed.older ? <FeedLoadFailed onRetry={feed.retryOlder} /> : null}
           {windowedMessages.length === 0 && !bot.busy && <EmptyChat bot={bot} />}
           {segments.map((segment) => (
             <ChatRowsContext.Provider key={segment.key} value={segment.rows ?? rows}>
@@ -1247,7 +1247,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
               />
             </ChatRowsContext.Provider>
           ))}
-          {feed.failed === "newest" && <FeedLoadFailed onRetry={feed.retry} />}
+          {feed.failed.newest && <FeedLoadFailed onRetry={feed.retryNewest} />}
           {laterCount > 0 && (
             <div className="flex justify-center">
               <button

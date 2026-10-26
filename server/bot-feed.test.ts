@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { orderFeed } from "../shared/single-chat-feed.ts";
 import { botFeedPage, type FeedSource } from "./bot-feed.ts";
 import type { Message } from "./store.ts";
 
@@ -61,6 +62,27 @@ describe("botFeedPage", () => {
     expect(ids(page)).toEqual(["fresh:fresh1", "fresh:fresh2"]);
     expect(page?.hasMore).toBe(true);
     expect(loads).toEqual(["fresh"]);
+  });
+
+  it("pages long, interleaved histories with backdated lines exactly like a full sort", () => {
+    // Three 20k-line conversations, interleaved in time, each with lines written out of order (imported, backdated).
+    const threads: Record<string, number[]> = {};
+    for (const [n, name] of ["main", "topic", "routine"].entries()) {
+      threads[name] = Array.from({ length: 20_000 }, (_, i) => (i % 997 === 0 ? i * 3 - 1500 : i * 3 + n));
+    }
+    const whole = orderFeed(Object.entries(threads).map(([threadId, ats]) => ({ threadId, messages: ats.map((at, index) => line(`${threadId}${index}`, at)) })))
+      .map((entry) => `${entry.threadId}:${entry.message.id}`);
+    const seen: string[] = [];
+    let page = botFeedPage(sources(threads), 200)!;
+    seen.unshift(...ids(page)!);
+    for (let pages = 1; page.hasMore && pages < 40; pages += 1) {
+      const oldest = page.items[0]!;
+      page = botFeedPage(sources(threads), 200, { threadId: oldest.threadId, messageId: oldest.message.id })!;
+      expect(page.items).toHaveLength(200);
+      seen.unshift(...ids(page)!);
+    }
+    expect(seen).toEqual(whole.slice(-seen.length));
+    expect(seen).toHaveLength(40 * 200);
   });
 
   it("answers an empty page for a limit of 0", () => {

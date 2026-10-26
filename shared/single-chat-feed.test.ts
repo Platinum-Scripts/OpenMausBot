@@ -27,6 +27,12 @@ describe("singleChatFeedTarget", () => {
     expect(singleChatFeedTarget({ threadId: "main", tasks })).toBe("main");
   });
 
+  it("takes a conversation's newest message time when its stamps lag it", () => {
+    const tasks = [task("main", 30), task("topic", 20)];
+    expect(singleChatFeedTarget({ threadId: "main", tasks }, new Map([["topic", 50]]))).toBe("topic");
+    expect(singleChatFeedTarget({ threadId: "main", tasks }, new Map([["topic", 25]]))).toBe("main");
+  });
+
   it("keeps the open conversation on a tie", () => {
     expect(singleChatFeedTarget({ threadId: "b", tasks: [task("a", 10), task("b", 10)] })).toBe("b");
   });

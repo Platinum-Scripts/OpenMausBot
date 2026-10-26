@@ -60,13 +60,15 @@ export function feedSegments(rows: readonly FeedRow[]): FeedSegment[] {
 }
 
 /** A newest page that shares nothing with a non-empty hold leaves a gap behind it, so the hold restarts from it. */
+export function restartsHold(held: HeldFeed, page: WireFeedPage): boolean {
+  if (!page.hasMore || held.entries.length === 0) return false;
+  const keys = new Set(held.entries.map(entryKey));
+  return !(page.items as FeedEntry<Message>[]).some((item) => keys.has(entryKey(item)));
+}
+
 export function mergeFeedPage(held: HeldFeed | undefined, page: WireFeedPage, which: "newest" | "older"): HeldFeed {
   const items = page.items as FeedEntry<Message>[];
-  if (!held) return { entries: items, hasMore: page.hasMore };
-  const keys = new Set(held.entries.map(entryKey));
-  if (which === "newest" && page.hasMore && held.entries.length > 0 && !items.some((item) => keys.has(entryKey(item)))) {
-    return { entries: items, hasMore: page.hasMore };
-  }
+  if (!held || (which === "newest" && restartsHold(held, page))) return { entries: items, hasMore: page.hasMore };
   const fresh = new Map(items.map((item) => [entryKey(item), item]));
   const kept = held.entries.filter((entry) => !fresh.has(entryKey(entry)));
   return which === "older"
