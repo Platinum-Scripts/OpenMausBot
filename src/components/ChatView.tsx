@@ -51,7 +51,7 @@ import { BotAvatar } from "./Avatar";
 import { TurnPresence } from "./TurnPresence";
 import { showToolCallsEnabled, skillAuthoringEnabled } from "@/lib/feature-flags";
 import { useChatFeed, useShownSegments } from "@/hooks/use-single-chat-feed";
-import { DaySeparator, TopicDivider } from "./TranscriptDividers";
+import { DaySeparator, FeedLoadFailed, TopicDivider } from "./TranscriptDividers";
 import { normalizeState, stateForBot } from "@/lib/mascot";
 import { peerLine, peerRequest, type PeerLine } from "@/lib/peer-message";
 import { showWorkingDots } from "@/lib/turn-tail";
@@ -967,7 +967,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
     () => ({ botId: bot.id, threadId: bot.threadId, botName: bot.name, voiceId: bot.voice, tts, localVoice, busy, hasMore, bots, mentionPeers, mentionPerson: { profileName: state.config?.profile?.name }, focus, showToolCalls, locale, dispatch, onBranch, bubbleStyle, conversational: isConversational(bot.replyStyle), simple: !advanced, canReact: canWrite !== false, openedAt, speakerViewer }),
     [bot.id, bot.threadId, bot.name, bot.voice, tts, localVoice, busy, hasMore, bots, mentionPeers, state.config?.profile?.name, focus, showToolCalls, locale, dispatch, onBranch, bubbleStyle, bot.replyStyle, advanced, canWrite, openedAt, speakerViewer],
   );
-  const segments = useShownSegments({ feed: feed.rows, windowed: windowedMessages, threadId: bot.threadId, tasks: profile.tasks, rows, transcript: messages, lookups });
+  const segments = useShownSegments({ botId: bot.id, feed: feed.rows, windowed: windowedMessages, threadId: bot.threadId, tasks: profile.tasks, rows, transcript: messages, lookups });
   const currentTask = bot.tasks?.find((task) => task.threadId === bot.threadId), place = effectivePlace(bot, currentTask), team = state.config?.team, privateChat = Boolean(team) && currentTask?.private === true, sharedChat = Boolean(team) && !privateChat;
 
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -1222,7 +1222,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
             </div>
           ) : hiddenCount > 0 || feed.viewport.hasMore ? (
             <div ref={topSentinelRef} className="h-2 w-full pointer-events-none" aria-hidden="true" />
-          ) : null}
+          ) : feed.failed === "older" ? <FeedLoadFailed onRetry={feed.retry} /> : null}
           {windowedMessages.length === 0 && !bot.busy && <EmptyChat bot={bot} />}
           {segments.map((segment) => (
             <ChatRowsContext.Provider key={segment.key} value={segment.rows ?? rows}>
@@ -1247,6 +1247,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
               />
             </ChatRowsContext.Provider>
           ))}
+          {feed.failed === "newest" && <FeedLoadFailed onRetry={feed.retry} />}
           {laterCount > 0 && (
             <div className="flex justify-center">
               <button

@@ -7,8 +7,9 @@ import type { Bot, Message } from "@/state/store";
 const fixture = vi.hoisted(() => ({ api: vi.fn() }));
 vi.mock("@/state/store", async (importOriginal) => ({ ...await importOriginal<typeof import("@/state/store")>(), api: fixture.api }));
 
-const { forgetSingleChatFeeds, useSingleChatFeed, useSingleChatFeedTarget } = await import("./use-single-chat-feed");
+const { forgetSingleChatFeeds, heldSingleChatFeeds, primeSingleChatFeed, useMarkShownTopicsRead, useSingleChatFeed, useSingleChatFeedTarget } = await import("./use-single-chat-feed");
 const { restoreComposerDraft } = await import("@/lib/drafts");
+const { ApiError } = await import("@/state/api");
 
 const said = (id: string, at: number): Message => ({ id, at, role: "user", kind: "text", text: id });
 const page = (items: Array<[string, Message]>, hasMore = false) => ({ items: items.map(([threadId, message]) => ({ threadId, message })), hasMore });
@@ -84,10 +85,82 @@ describe("useSingleChatFeed", () => {
     expect(seen?.pending).toBe(false);
   });
 
-  it("marks another topic read once its messages are on screen", async () => {
-    fixture.api.mockResolvedValue(page([["topic", said("t1", 20)]]));
-    await show({ ...base, tasks: [base.tasks![0]!, { ...base.tasks![1]!, unread: true }] });
-    expect(fixture.api).toHaveBeenCalledWith("/api/bots/bot/read", { method: "POST", body: JSON.stringify({ threadId: "topic" }) });
+  it("says so when the history fails to load, and loads it on retry", async () => {
+    fixture.api.mockRejectedValueOnce(new Error("offline"));
+    await show(base);
+    expect(seen?.failed).toBe("newest");
+    expect(ids()).toEqual(["main:m2"]);
+    fixture.api.mockResolvedValueOnce(page([["topic", said("t1", 20)]]));
+    await act(async () => { seen!.retry(); });
+    expect(feedCalls()).toHaveLength(2);
+    expect(seen?.failed).toBeNull();
+    expect(ids()).toEqual(["topic:t1", "main:m2"]);
+  });
+
+  it("retries a failed older page from the same place", async () => {
+    fixture.api.mockResolvedValueOnce(page([["topic", said("t1", 20)]], true));
+    await show(base);
+    fixture.api.mockRejectedValueOnce(new ApiError("busy", 503));
+    await act(async () => { seen!.loadOlder(); });
+    expect(seen?.failed).toBe("older");
+    expect(seen?.pending).toBe(false);
+    fixture.api.mockResolvedValueOnce(page([["main", said("m0", 5)]]));
+    await act(async () => { seen!.retry(); });
+    expect(feedCalls()[2]).toBe("/api/bots/bot/feed?limit=200&threadId=topic&before=t1");
+    expect(seen?.failed).toBeNull();
+    expect(ids()).toEqual(["main:m0", "topic:t1", "main:m2"]);
+  });
+
+  it("starts over from the newest page when the older page's place is gone", async () => {
+    fixture.api.mockResolvedValueOnce(page([["topic", said("t1", 20)]], true));
+    await show(base);
+    fixture.api.mockRejectedValueOnce(new ApiError("no such message", 404));
+    fixture.api.mockResolvedValueOnce(page([["topic", said("t9", 25)]], false));
+    await act(async () => { seen!.loadOlder(); });
+    expect(feedCalls()).toEqual([
+      "/api/bots/bot/feed?limit=200",
+      "/api/bots/bot/feed?limit=200&threadId=topic&before=t1",
+      "/api/bots/bot/feed?limit=200",
+    ]);
+    expect(seen?.failed).toBeNull();
+    expect(ids()).toEqual(["topic:t9", "main:m2"]);
+  });
+
+  it("holds the feeds of the most recently opened bots only", () => {
+    for (let i = 0; i < 30; i += 1) primeSingleChatFeed(`bot-${i}`, page([["main", said("m", i)]]));
+    expect(heldSingleChatFeeds()).toHaveLength(20);
+    expect(heldSingleChatFeeds().at(-1)).toBe("bot-29");
+    expect(heldSingleChatFeeds()).not.toContain("bot-0");
+  });
+});
+
+describe("useMarkShownTopicsRead", () => {
+  let root: Root;
+  let container: HTMLDivElement;
+  const unreadTopic: Bot = { ...base, tasks: [base.tasks![0]!, { ...base.tasks![1]!, unread: true }, { threadId: "far", title: "Far", createdAt: 3, updatedAt: 1, unread: true }] };
+  function Reader({ shown }: { shown: Array<{ threadId: string }> }) {
+    useMarkShownTopicsRead(unreadTopic, true, shown);
+    return null;
+  }
+  const readCalls = () => fixture.api.mock.calls.filter(([path]) => String(path).endsWith("/read")).map(([, init]) => JSON.parse(String(init.body)).threadId);
+
+  beforeEach(() => {
+    fixture.api.mockReset();
+    fixture.api.mockResolvedValue({});
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  it("marks another topic read only once its lines are drawn", async () => {
+    await act(async () => { root.render(createElement(Reader, { shown: [{ threadId: "main" }] })); });
+    expect(readCalls()).toEqual([]);
+    await act(async () => { root.render(createElement(Reader, { shown: [{ threadId: "topic" }, { threadId: "main" }] })); });
+    expect(readCalls()).toEqual(["topic"]);
   });
 });
 
@@ -126,6 +199,14 @@ describe("useSingleChatFeedTarget", () => {
     expect(dispatch).not.toHaveBeenCalled();
     restoreComposerDraft("bot:bot:main", { text: "", attachments: [] });
     show({ ...newerTopic, messages: [said("m2", 30), said("sent", 31)] });
+    expect(dispatch).toHaveBeenCalledExactlyOnceWith({ type: "switchTask", botId: "bot", threadId: "topic" });
+  });
+
+  it("moves as soon as the draft is cleared, with nothing else changing", async () => {
+    restoreComposerDraft("bot:bot:main", { text: "half a thought", attachments: [] });
+    await act(async () => { root.render(createElement(Target, { bot: newerTopic })); });
+    expect(dispatch).not.toHaveBeenCalled();
+    await act(async () => { restoreComposerDraft("bot:bot:main", { text: "", attachments: [] }); });
     expect(dispatch).toHaveBeenCalledExactlyOnceWith({ type: "switchTask", botId: "bot", threadId: "topic" });
   });
 

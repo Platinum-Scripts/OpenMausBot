@@ -82,6 +82,35 @@ export function getDraft(store: Store, id: string): string {
 export function setDraft(store: Store, id: string, text: string): void {
   memoryFor(store, textDraftsByStore, fallbackTextDrafts).set(id, text);
   if (store) saveDraftLater(store, id);
+  draftChanged(id);
+}
+
+const draftListeners = new Map<string, Set<() => void>>();
+const draftNotices = new Set<string>();
+
+// After the current task: a draft can be written while a component renders (useDraft's legacy move).
+function draftChanged(id: string): void {
+  if (!draftListeners.has(id) || draftNotices.has(id)) return;
+  draftNotices.add(id);
+  queueMicrotask(() => {
+    draftNotices.delete(id);
+    for (const listener of draftListeners.get(id) ?? []) listener();
+  });
+}
+
+/** Whether the composer `id` holds text or an attachment, kept current as it is typed or cleared. */
+export function useHasComposerDraft(id: string): boolean {
+  const subscribe = useCallback((listener: () => void) => {
+    const listeners = draftListeners.get(id) ?? new Set<() => void>();
+    listeners.add(listener);
+    draftListeners.set(id, listeners);
+    return () => {
+      listeners.delete(listener);
+      if (listeners.size === 0) draftListeners.delete(id);
+    };
+  }, [id]);
+  const snapshot = () => hasComposerDraft(id);
+  return useSyncExternalStore(subscribe, snapshot, snapshot);
 }
 
 const SAVE_DELAY_MS = 500;
@@ -147,6 +176,7 @@ export function getDraftAttachments(store: Store, id: string): Attachment[] {
 
 export function setDraftAttachments(store: Store, id: string, attachments: Attachment[]): void {
   memoryFor(store, attachmentDraftsByStore, fallbackAttachmentDrafts).set(id, [...attachments]);
+  draftChanged(id);
   const drafts = read(store, ATTACHMENTS_KEY);
   // Blob URLs exist only for this document: persist only upload-complete attachments.
   const durable = attachments.flatMap((attachment): Attachment[] => {

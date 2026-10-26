@@ -50,6 +50,7 @@ const bot: Bot = {
 };
 
 function render(of: Bot = bot) {
+  forgetSingleChatFeeds();
   primeSingleChatFeed(of.id, {
     items: [{ threadId: "main", message: hello }, { threadId: "pricing", message: pricing }, { threadId: "main", message: status }],
     hasMore: false,
@@ -67,10 +68,30 @@ describe("ChatView with the single chat feed on", () => {
   it("shows every topic in one history by time, with a label where the topic changes", () => {
     const markup = render();
     let from = 0;
-    for (const text of ['aria-label="Topic: Main chat"', "Morning, Pepper", 'aria-label="Topic: Pricing"', "What should the price be?",
+    for (const text of ["Morning, Pepper", 'aria-label="Topic: Pricing"', "What should the price be?",
       'aria-label="Topic: Main chat"', "Hourly factory status: all green"]) from = position(markup, text, from) + 1;
-    expect(markup.match(/data-feed-topic=/g)).toHaveLength(3);
-    expect(markup).toContain('aria-label="Topic: Pricing"');
+    expect(markup.match(/data-feed-topic=/g)).toHaveLength(2);
+  });
+
+  it("puts no topic label above the first line, where the day label already sits", () => {
+    const markup = render();
+    expect(markup.indexOf("data-feed-topic=")).toBeGreaterThan(markup.indexOf("Morning, Pepper"));
+  });
+
+  it("offers a retry below the history when its newest lines failed to load", () => {
+    primeSingleChatFeed(bot.id, { items: [{ threadId: "main", message: status }], hasMore: true }, { failed: "newest" });
+    const markup = renderToStaticMarkup(createElement(ChatView, { bot }));
+    expect(markup.match(/data-feed-failed/g)).toHaveLength(1);
+    expect(position(markup, "data-feed-failed")).toBeGreaterThan(position(markup, "Hourly factory status: all green"));
+    expect(markup).toContain("Couldn&#x27;t load the rest of this history.");
+    expect(markup).toContain(">Retry<");
+  });
+
+  it("offers a retry above the history when older lines failed to load", () => {
+    primeSingleChatFeed(bot.id, { items: [{ threadId: "main", message: status }], hasMore: true }, { failed: "older" });
+    const markup = renderToStaticMarkup(createElement(ChatView, { bot }));
+    expect(markup.match(/data-feed-failed/g)).toHaveLength(1);
+    expect(position(markup, "data-feed-failed")).toBeLessThan(position(markup, "Hourly factory status: all green"));
   });
 
   it("hides the topic dropdown, the way back and the background activity picker", () => {

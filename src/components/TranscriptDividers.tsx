@@ -20,3 +20,13 @@ export function TopicDivider({ title }: { title: string }) {
     </div>
   );
 }
+
+/** A single chat feed whose history did not all load: the lines above are missing until it does. */
+export function FeedLoadFailed({ onRetry }: { onRetry: () => void }) {
+  return (
+    <div role="status" data-feed-failed="" className="flex items-center justify-center gap-2 py-3 text-[13px] text-ink-secondary">
+      <span>{t("chat.feed.loadFailed")}</span>
+      <button type="button" onClick={onRetry} className="min-h-11 rounded px-3 text-accent hover:bg-raised">{t("chat.retry")}</button>
+    </div>
+  );
+}

@@ -6315,5 +6315,6 @@
   "settings.singleChatFeed.title": "Single chat feed",
   "settings.singleChatFeed.subtitle": "Show every topic in one continuous history per bot",
   "settings.singleChatFeed.error": "Could not save the single chat feed setting.",
-  "chat.feed.topicAria": "Topic: {title}"
+  "chat.feed.topicAria": "Topic: {title}",
+  "chat.feed.loadFailed": "Couldn't load the rest of this history."
 }

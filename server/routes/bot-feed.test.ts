@@ -7,6 +7,7 @@ import { DATA_DIR } from "../config.ts";
 import type { ModelSelection } from "../contracts.ts";
 import { json, readBody } from "../harness/http.ts";
 import { pageSize, slimMessage } from "../host/message-pages.ts";
+import { latestMessageAts } from "../message-db.ts";
 import type { RequestAuth } from "../request-auth.ts";
 import { Store } from "../store.ts";
 import { createBotFeedRoutes } from "./bot-feed.ts";
@@ -22,7 +23,7 @@ afterEach(async () => {
 
 async function serve(store: Store, hidden: { bots?: string[]; threads?: string[] } = {}): Promise<string> {
   const routes = [createBotFeedRoutes({
-    store, pageSize, slim: slimMessage, defaultPage: 3,
+    store, pageSize, slim: slimMessage, defaultPage: 3, latestAts: latestMessageAts,
     visibleFor: () => ({ bot: (id) => !hidden.bots?.includes(id), thread: (id) => !hidden.threads?.includes(id) }),
   })];
   const server = createServer(async (req, res) => {
@@ -87,6 +88,14 @@ describe("GET /api/bots/:id/feed", () => {
     const older = await get(base, `/api/bots/${bot.id}/feed?threadId=${oldest.threadId}&before=${oldest.message.id}`);
     expect(lines(older.body)).toEqual([`${main}|hello`, `${topic}|price?`]);
     expect(older.body.hasMore).toBe(false);
+  });
+
+  it("keeps a conversation whose recorded activity time lags its newest message", async () => {
+    const { store, bot, main, topic } = fixture();
+    for (const task of store.bot(bot.id)!.tasks!) task.updatedAt = task.createdAt = task.threadId === topic ? 1 : 9_000;
+    const base = await serve(store);
+    const newest = await get(base, `/api/bots/${bot.id}/feed?limit=2`);
+    expect(lines(newest.body)).toEqual([`${topic}|frame`, `${main}|latest`]);
   });
 
   it("follows each conversation's active branch only", async () => {

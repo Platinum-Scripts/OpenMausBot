@@ -12,6 +12,8 @@ export interface BotFeedRouteDeps {
   pageSize(raw: string | null): number | null | undefined;
   slim(message: Message): Message | Record<string, unknown>;
   visibleFor(auth: RequestAuth): Pick<VisibleSet, "bot" | "thread">;
+  /** Each conversation's newest message time, from the messages themselves (message-db.ts latestMessageAts). */
+  latestAts(threadIds: readonly string[]): ReadonlyMap<string, number>;
 }
 
 /** One continuous history per bot (features.singleChatFeed): every conversation's active branch, merged by time. */
@@ -29,11 +31,14 @@ export function createBotFeedRoutes(deps: BotFeedRouteDeps): RouteHandler {
     if (Boolean(threadId) !== Boolean(before)) return json(res, 400, { error: "threadId and before go together" });
 
     const tasks: SingleChatFeedTask[] = bot.tasks?.length ? bot.tasks : [{ threadId: bot.threadId, createdAt: bot.createdAt }];
-    const sources = singleChatFeedThreads(tasks, bot.threadId)
-      .filter((task) => visible.thread(task.threadId))
+    const shown = singleChatFeedThreads(tasks, bot.threadId).filter((task) => visible.thread(task.threadId));
+    // botFeedPage skips a conversation whose newest message is older than a full page: that time must be the real
+    // one, since a task's activity stamp can lag (an imported or backdated line).
+    const latest = deps.latestAts(shown.map((task) => task.threadId));
+    const sources = shown
       .map((task) => ({
         threadId: task.threadId,
-        newestAt: Math.max(task.updatedAt ?? 0, task.createdAt ?? 0),
+        newestAt: Math.max(latest.get(task.threadId) ?? Number.NEGATIVE_INFINITY, task.updatedAt ?? 0, task.createdAt ?? 0),
         messages: () => deps.store.activePath(task.threadId),
       }));
     const page = botFeedPage(sources, limit ?? deps.defaultPage, threadId && before ? { threadId, messageId: before } : null);
