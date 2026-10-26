@@ -6313,7 +6313,7 @@
   "usageMeter.err.rateLimited": "Too many tries. Wait a few minutes, then try again.",
   "usageMeter.err.failed": "We couldn't change your plan. Nothing was charged. Try again in a minute.",
   "settings.singleChatFeed.title": "Single chat feed",
-  "settings.singleChatFeed.subtitle": "Show every topic in one continuous history per bot. What you send goes to the bot's newest topic. This applies to everyone using this server.",
+  "settings.singleChatFeed.subtitle": "Show every topic in one continuous history per bot",
   "settings.singleChatFeed.error": "Could not save the single chat feed setting.",
   "chat.feed.topicAria": "Topic: {title}"
 }
