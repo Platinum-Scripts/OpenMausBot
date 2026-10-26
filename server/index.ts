@@ -165,7 +165,6 @@ import {
   maxConcurrentBotThreads,
   threadEventLogRetentionDays,
   saveConfig,
-  showToolCallsEnabled,
   claudeUserMcpEnabled,
   skillAuthoringEnabled,
   skillReviewEnabled,
@@ -301,7 +300,8 @@ import { cancelPeerApprovalsFor, cancelPeerApprovalsForThread, dismissStalePeerC
 import { peerDeliveryReceipt, type PeerDeliveryReceipt } from "./peer-delivery.ts";
 import { createRoomAccess } from "./host/room-access.ts";
 import { createWebhookRoomPost } from "./host/webhook-room-deps.ts";
-import { createRoomJobs, parallelRoomJobsEnabled, type RoomRoundLine } from "./host/room-jobs.ts";
+import { createRoomJobs, type RoomRoundLine } from "./host/room-jobs.ts";
+import { featureStatus } from "./host/feature-status.ts";
 import { createDelegatedLevel } from "./host/delegated-level.ts";
 import { CONSENT_RULE, escapeNotes, OUTSIDE, peerLineText, peerProvenanceNote, quoteInNote, reportNote, requestWorkOrigin, type WorkOrigin } from "./peer-provenance.ts";
 import { decideRoomPost, emptyRoomPostBudget, type RoomPostAttempt, type RoomPostBudget } from "./room-post-budget.ts";
@@ -12613,22 +12613,7 @@ function configStatus() {
       maxInstances: localVmMaxInstances(cfg),
       idleTimeoutMinutes: localVmIdleTimeoutMinutes(cfg),
     },
-    features: {
-      skillAuthoring: skillAuthoringEnabled(cfg),
-      skillReview: cfg.features?.skillReview === true,
-      skillReviewSteps: skillReviewSteps(cfg),
-      skillsLibrary: skillsLibraryEnabled(cfg),
-      shareLearnedSkills: skillsHost.mode(),
-      showToolCalls: showToolCallsEnabled(cfg),
-      browser: builtInBrowserEnabled(cfg),
-      sharedComputers: sharedComputersEnabled(cfg),
-      claudeUserMcp: claudeUserMcpEnabled(cfg),
-      claudeUserSkills: claudeUserSkillsEnabled(cfg),
-      autoRecall: autoRecallEnabled(cfg),
-      roomMemoryCapture: roomMemoryCaptureEnabled(cfg),
-      parallelRoomJobs: parallelRoomJobsEnabled(cfg),
-      llmThreadTitles: llmThreadTitlesEnabled(cfg),
-    },
+    features: featureStatus({ cfg, skillsHost }),
     onboarding: {
       completedAt: cfg.onboarding?.completedAt ?? "",
       version: cfg.onboarding?.version ?? 0,
