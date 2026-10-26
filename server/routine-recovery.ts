@@ -2,9 +2,11 @@
 // busy target is waited for, a usage limit with a known reset is waited out, and what only the owner can fix fails at
 // once and is told to them once per bot and cause, until one of that bot's runs completes.
 import type { RuntimeEvent } from "../shared/runtime-events.ts";
-import type { RoutineRetryCause } from "../shared/routines.ts";
+import type { RoutineRetryCause, RoutineRetryPolicy } from "../shared/routines.ts";
 import { engineFailureKind } from "./drivers/engine-errors.ts";
 import { classifyError } from "./drivers/retry.ts";
+import { outcomesNewestFirst } from "./routine-outcomes.ts";
+import { resolveRetryPolicy, RETRY_POLICY_LEGACY, RETRY_STREAK_CAP, retryPolicyOn } from "./routine-retry-policy.ts";
 import type { RoutineRun } from "./routines.ts";
 import { hostTimeZone } from "./turn-clock.ts";
 
@@ -23,7 +25,7 @@ export interface RoutineFailureFacts {
 }
 
 export type RoutineFailureClass =
-  | { kind: "retry"; cause: Exclude<RoutineRetryCause, "usage_limit"> }
+  | { kind: "retry"; cause: Exclude<RoutineRetryCause, "usage_limit" | "timeout"> }
   | { kind: "busy" }
   | { kind: "owner"; cause: RoutineOwnerCause; resetsAt?: number }
   | { kind: "final" };
@@ -55,15 +57,19 @@ const OWNER_ACTION: Record<Exclude<RoutineOwnerCause, "setup">, string> = {
 const TRIAL_ACTION = "The trial Claude credit can't run this. Sign in with your own Claude or ChatGPT account, or add an API key.";
 const RETRY_WHY: Record<Exclude<RoutineRetryCause, "usage_limit">, string> = {
   stalled: "the AI stalled", restarted: "OpenMausBot restarted while it ran", rate_limited: "a rate limit", provider: "a temporary error",
+  timeout: "reaching its run limit",
 };
-const FIRST_START: Record<RoutineRetryCause, string> = {
+const FIRST_START: Record<Exclude<RoutineRetryCause, "timeout">, string> = {
   stalled: "stopped when its AI stalled", restarted: "was cut off when OpenMausBot restarted", rate_limited: "was stopped by a rate limit",
   provider: "failed on a temporary AI error", usage_limit: "was refused by the AI's usage limit",
 };
+/** Stop reasons of a turn someone stopped on purpose: the owner's stop is never undone by a retry. */
+const STOPPED_ON_PURPOSE = new Set(["cancelled", "interrupted"]);
 
 export function classifyRoutineFailure(failure: string, facts: RoutineFailureFacts = {}): RoutineFailureClass {
   if (facts.cause === "busy") return { kind: "busy" };
   if (facts.cause === "stalled" || facts.stalled) return { kind: "retry", cause: "stalled" };
+  if (facts.stopReason && STOPPED_ON_PURPOSE.has(facts.stopReason)) return { kind: "final" };
   const engine = engineFailureKind(failure);
   const { reason, transient } = classifyError({ text: failure });
   if (facts.trialCredit || engine === "credits") return { kind: "owner", cause: "credits" };
@@ -97,12 +103,20 @@ function when(at: number): string {
   }
 }
 
-/** Queues the run's one second start; false when it already had it or is not a bot's run. */
-export function requeueOnce(run: RoutineRun, cause: RoutineRetryCause, failure: string, now: number,
-  at = now + (cause === "rate_limited" ? RATE_LIMIT_RETRY_MS : RETRY_MS)): boolean {
-  if (run.target !== "bot" || run.retried !== undefined) return false;
+/** How many times the run already started again by itself. */
+export function retriesOf(run: Pick<RoutineRun, "retried" | "retries">): number {
+  return run.retries ?? (run.retried === undefined ? 0 : 1);
+}
+
+const retryWord = (count: number) => `${count} automatic ${count === 1 ? "retry" : "retries"}`;
+
+/** Queues the run's next start; false when it already had `limit` of them or is not a bot's run. */
+function requeue(run: RoutineRun, cause: RoutineRetryCause, failure: string, at: number, limit: number): boolean {
+  const retries = retriesOf(run);
+  if (run.target !== "bot" || retries >= limit) return false;
   run.status = "queued";
   run.retried = cause;
+  run.retries = retries + 1;
   run.retryAt = at;
   run.attention = cause === "usage_limit"
     ? `Waiting for the AI's usage limit to reset; this run starts again at ${when(at)}`
@@ -111,8 +125,73 @@ export function requeueOnce(run: RoutineRun, cause: RoutineRetryCause, failure: 
   return true;
 }
 
-/** The second start's own line, so a run that already did part of its work does not do it twice. */
+/** Queues the run's one second start after a restart or a usage limit; false when it already started again. */
+export function requeueOnce(run: RoutineRun, cause: RoutineRetryCause, failure: string, now: number,
+  at = now + (cause === "rate_limited" ? RATE_LIMIT_RETRY_MS : RETRY_MS)): boolean {
+  return requeue(run, cause, failure, at, 1);
+}
+
+/** The retry policy a run starts again by, and why it must not, or null: a newer run of its routine took over, or the
+ * routine keeps failing. `on` is false while neither config.json nor the routine asked for automatic retries. */
+export interface RetryContext {
+  policy: RoutineRetryPolicy;
+  refusal: string | null;
+  on: boolean;
+}
+
+/** A newer run of the same routine is working or has completed since `run` began: starting `run` again would redo or
+ * race that run's work. */
+export function overtakenBy(runs: readonly RoutineRun[], run: RoutineRun): string | null {
+  const at = runs.indexOf(run);
+  const newer = runs.filter((other, index) => index > at && other.routineId === run.routineId && other.id !== run.id);
+  if (newer.some((other) => other.status === "running" || other.status === "waiting")) return "a newer run of this routine is already running";
+  if (newer.some((other) => other.status === "completed")) return "a newer run of this routine has completed since";
+  return null;
+}
+
+/** Without any "retryOnFailure" (config.json or the routine's own), retries behave as they always did. */
+export function retryContextFor(runs: readonly RoutineRun[], run: RoutineRun, workspace?: Partial<RoutineRetryPolicy>,
+  own?: Partial<RoutineRetryPolicy>): RetryContext {
+  const policy = resolveRetryPolicy(workspace, own);
+  if (!retryPolicyOn(workspace, own)) return { policy, refusal: null, on: false };
+  const outcomes = outcomesNewestFirst(runs, run.routineId, run.id);
+  const success = outcomes.findIndex((outcome) => outcome.status === "completed");
+  const streak = success < 0 ? outcomes.length : success;
+  return { policy, refusal: overtakenBy(runs, run) ?? (streak >= RETRY_STREAK_CAP ? `its last ${streak} runs failed too` : null), on: true };
+}
+
+/** A queued automatic retry whose routine moved on meanwhile is cancelled instead of started; true when it was. */
+export function cancelOvertakenRetry(runs: readonly RoutineRun[], run: RoutineRun, retry: RetryContext, now: number): boolean {
+  const overtaken = retry.on && run.retried !== undefined && run.retried !== "restarted" ? overtakenBy(runs, run) : null;
+  if (overtaken) Object.assign(run, { status: "cancelled", attention: undefined, finishedAt: now, error: `Not retried: ${overtaken}` } satisfies Partial<RoutineRun>);
+  return overtaken !== null;
+}
+
+/** A run that reached its run limit: it starts again with a fresh limit, in its own thread ("resume") or a new one
+ * ("rerun"), until its policy's retries are used up. A queued run is changed in place; a failing one is the caller's
+ * to fail with `error`. */
+export function recoverTimeout(run: RoutineRun, limitReached: string, now: number, retry: RetryContext): RoutineRecovery {
+  const retries = retriesOf(run);
+  const given = retries ? `${limitReached} (after ${retryWord(retries)})` : limitReached;
+  if (run.target !== "bot" || retry.policy.onTimeout === "off") return { queued: false, error: given };
+  if (retry.refusal) return { queued: false, error: `${given}. Not retried: ${retry.refusal}` };
+  if (!requeue(run, "timeout", limitReached, now + retry.policy.delayMinutes * 60_000, retry.policy.max)) return { queued: false, error: given };
+  for (const field of ["waitedMs", "asked", "waitingSince", "deferredAt", "deferredNoticeAt"] as const) delete run[field];
+  if (retry.policy.onTimeout === "rerun") delete run.threadId;
+  const limit = run.timeoutMinutes ? `a fresh ${run.timeoutMinutes}-minute run limit` : "a fresh run limit";
+  run.attention = retry.policy.onTimeout === "resume"
+    ? `Reached its run limit; continuing in its own thread with ${limit} at ${when(run.retryAt!)}`
+    : `Reached its run limit; starting over in a new thread with ${limit} at ${when(run.retryAt!)}`;
+  return { queued: true };
+}
+
+/** The next start's own line, so a run that already did part of its work does not do it twice. */
 export function retryNote(cause: RoutineRetryCause): string {
+  if (cause === "timeout") {
+    return "[Auto-retry from OpenMausBot: this run's last start reached its run limit before it finished, and it starts again with a fresh limit. " +
+      "Check what it already did (files, messages sent, anything started) so nothing is done twice, then finish the routine. " +
+      "If the same problem comes back, say exactly what is blocking and stop.]";
+  }
   return `[OpenMausBot: this run's first start ${FIRST_START[cause]} before it finished. If it already did part of the work, ` +
     "check what it did (files, messages sent, anything started) so nothing is done twice; then finish the routine.]";
 }
@@ -124,9 +203,11 @@ function firstNotice(notices: RoutineOwnerNotice[], botId: string, cause: Routin
 }
 
 /** What a failed attempt becomes. A queued run is changed in place; a failing one is the caller's to fail with `error`. */
-export function recoverRun(run: RoutineRun, failure: string, facts: RoutineFailureFacts, now: number, notices: RoutineOwnerNotice[]): RoutineRecovery {
+export function recoverRun(run: RoutineRun, failure: string, facts: RoutineFailureFacts, now: number, notices: RoutineOwnerNotice[],
+  retry: RetryContext = { policy: RETRY_POLICY_LEGACY, refusal: null, on: false }): RoutineRecovery {
   const verdict: RoutineFailureClass = run.target === "bot" ? classifyRoutineFailure(failure, facts) : { kind: "final" };
-  const again = run.retried ? `Failed after one automatic retry: ${failure}` : failure;
+  const retries = retriesOf(run);
+  const again = retries ? `Failed after ${retries === 1 ? "one automatic retry" : retryWord(retries)}: ${failure}` : failure;
   if (verdict.kind === "busy") {
     run.deferredAt ??= now;
     // A run of checked items waits as long as it takes: its bot is busy with the person, which is not a failure.
@@ -137,7 +218,11 @@ export function recoverRun(run: RoutineRun, failure: string, facts: RoutineFailu
     delete run.error;
     return { queued: true };
   }
-  if (verdict.kind === "retry") return requeueOnce(run, verdict.cause, failure, now) ? { queued: true } : { queued: false, error: again };
+  if (verdict.kind === "retry") {
+    if (retry.refusal && retries < retry.policy.max) return { queued: false, error: `${again}. Not retried: ${retry.refusal}` };
+    const at = now + (verdict.cause === "rate_limited" ? RATE_LIMIT_RETRY_MS : RETRY_MS);
+    return requeue(run, verdict.cause, failure, at, retry.policy.max) ? { queued: true } : { queued: false, error: again };
+  }
   if (verdict.kind === "final") return { queued: false, error: again };
   if (verdict.cause === "usage_limit" && facts.backupReady && requeueOnce(run, "usage_limit", failure, now, now + RETRY_MS)) {
     run.attention = "Starting again on the backup AI: this bot's AI reached its usage limit";

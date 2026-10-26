@@ -6,6 +6,7 @@ import { ROUTINE_CHECKS, type RoutineCheck } from "../shared/routines.ts";
 import { ROUTINE_PARTS, type PartPair, type RoutinePart } from "./package-parts.ts";
 import { loadAttachments, loadTimeoutMinutes } from "./routine-attachments.ts";
 import { MAX_DATE_MS } from "./routine-intervals.ts";
+import { RETRY_MAX_LIMIT, retryPolicyFields } from "./routine-retry-policy.ts";
 import { loadSchedule } from "./routine-schedules.ts";
 import type { Routine, RoutineGoalStatus, RoutinePackageStamp, RoutineRun, RoutineTarget } from "./routines.ts";
 
@@ -89,6 +90,7 @@ export function loadRoutine(routine: Routine, now: number): Routine | null {
     sourceThreadId: persistedSourceThreadId.parse(routine.sourceThreadId),
     resultsThreadId: persistedSourceThreadId.parse(routine.resultsThreadId),
     overlap: routine.overlap === "queue" ? "queue" : undefined,
+    retryOnFailure: retryPolicyFields(routine.retryOnFailure),
     runOnStartup: routine.runOnStartup === true ? true : undefined,
     skippedRuns: Number.isSafeInteger(routine.skippedRuns) && routine.skippedRuns! > 0 ? routine.skippedRuns : undefined,
     lastSkippedAt: Number.isSafeInteger(routine.lastSkippedAt) && routine.lastSkippedAt! >= 0 && routine.lastSkippedAt! <= MAX_DATE_MS ? routine.lastSkippedAt : undefined,
@@ -98,7 +100,7 @@ export function loadRoutine(routine: Routine, now: number): Routine | null {
     wakeAt: instant(routine.wakeAt),
   };
   delete loaded.failureStreak;
-  return withCheckFields(withoutUndefined(loaded, ["timeoutMinutes", "runOnStartup", "installedPackage", "checkedAt", "checkTrouble", "wakeAt"]));
+  return withCheckFields(withoutUndefined(loaded, ["timeoutMinutes", "retryOnFailure", "runOnStartup", "installedPackage", "checkedAt", "checkTrouble", "wakeAt"]));
 }
 
 export function loadRun(run: RoutineRun): RoutineRun {
@@ -116,6 +118,7 @@ export function loadRun(run: RoutineRun): RoutineRun {
     access: run.access === "read-and-draft" ? "read-and-draft" : undefined,
     deliver: run.deliver === "brief" ? "brief" : undefined,
     checkKey: typeof run.checkKey === "string" && /^[\w-]{1,128}$/.test(run.checkKey) ? run.checkKey : undefined,
+    retries: Number.isInteger(run.retries) && run.retries! >= 1 && run.retries! <= RETRY_MAX_LIMIT ? run.retries : undefined,
   };
-  return withoutUndefined(loaded, ["timeoutMinutes", "access", "deliver", "checkKey"]);
+  return withoutUndefined(loaded, ["timeoutMinutes", "access", "deliver", "checkKey", "retries"]);
 }

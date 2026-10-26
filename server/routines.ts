@@ -8,13 +8,14 @@ import { writeFileAtomic } from "./atomic.ts";
 import { redactSecretsInText } from "./redact.ts";
 import { activeRunsOf, nextDueOf, wakeHoldOf } from "./routine-due.ts";
 import type { GroupGoalRunStatus } from "../shared/group-goal-run.ts";
-import type { RoutineRequestOperation } from "../shared/routine-request.ts";
+import { isRoutineRequestAction, routineRequestOwnerKey, type RoutineRequestCommit, type RoutineRequestCommitFor, type RoutineRequestOwner, type RoutineRequestReceipt } from "./routine-request-receipts.ts";
+export type { RoutineRequestCommit, RoutineRequestOwner, RoutineRequestReceipt };
 import { intervalAllowsOccurrence, intervalHasRestrictions, isSameLocalDay, latestIntervalOccurrence } from "./routine-intervals.ts";
 import { cloneSchedule, limitResetOccurrence, mergeScheduleUpdate, nextOccurrence, RoutineScheduleError, type RoutineSchedule, type RoutineScheduleInput } from "./routine-schedules.ts";
 import { runsOnce } from "../shared/limit-reset.ts";
 import {
   isRoutineProblemRun, type RoutineAccess, type RoutineCheck, type RoutineContextAttachment, type RoutineDelivery, type RoutineIntervalWindow, type RoutineRetryCause,
-  type RoutineRunReport, type RoutineRunStatus, type RoutineRunTrigger,
+  type RoutineRetryPolicy, type RoutineRunReport, type RoutineRunStatus, type RoutineRunTrigger,
 } from "../shared/routines.ts";
 import type { PartPair, RoutinePart } from "./package-parts.ts";
 import {
@@ -22,7 +23,8 @@ import {
   routineFailure, routineHostWarning, skipNeedsNotice, supersededBy,
 } from "./routine-execution.ts";
 import {
-  dispatchRefusal, engineFacts, loadOwnerNotices, recoverRun, requeueOnce, weekRuns, type RoutineAlert, type RoutineFailureFacts, type RoutineOwnerNotice,
+  cancelOvertakenRetry, dispatchRefusal, engineFacts, loadOwnerNotices, recoverRun, recoverTimeout, requeueOnce, retryContextFor, weekRuns, type RetryContext,
+  type RoutineAlert, type RoutineFailureFacts, type RoutineOwnerNotice,
 } from "./routine-recovery.ts";
 import { activeMs, askOf, settleAsk, waitingFor, type RoutineRunAsk } from "./routine-waits.ts";
 import { failsLikeLastOutcome, outcomesNewestFirst } from "./routine-outcomes.ts";
@@ -58,6 +60,7 @@ export interface Routine {
   attachments?: RoutineContextAttachment[];
   continuity?: boolean;
   overlap?: "skip" | "queue";
+  retryOnFailure?: Partial<RoutineRetryPolicy>;
   runOnStartup?: boolean;
   checks?: RoutineCheck[];
   access?: RoutineAccess;
@@ -105,6 +108,7 @@ export interface RoutineRun {
   /** A queued run starts no earlier than this. */
   retryAt?: number;
   retried?: RoutineRetryCause;
+  retries?: number;
   /** When its current wait began; read only while the run is waiting. */
   waitingSince?: number;
   asked?: RoutineRunAsk;
@@ -133,31 +137,6 @@ export interface RoutineRun {
   seenAt?: number;
 }
 
-export interface RoutineRequestReceipt {
-  requestId: string;
-  messageId: string;
-  botId: string;
-  threadId: string;
-  action: RoutineRequestOperation["action"];
-  fingerprintVersion: 1;
-  fingerprint: string;
-  resultId: string;
-  appliedAt: number;
-}
-
-export interface RoutineRequestCommit {
-  requestId: string;
-  messageId: string;
-  botId: string;
-  threadId: string;
-  action: RoutineRequestOperation["action"];
-  fingerprintVersion: 1;
-  fingerprint: string;
-}
-
-type RoutineRequestCommitFor<Action extends RoutineRequestOperation["action"]> =
-  Omit<RoutineRequestCommit, "action"> & { action: Action };
-
 export interface RoutineInput {
   name: string;
   prompt: string;
@@ -172,6 +151,7 @@ export interface RoutineInput {
   attachments?: RoutineContextAttachment[];
   continuity?: boolean;
   overlap?: "skip" | "queue";
+  retryOnFailure?: Partial<RoutineRetryPolicy> | null;
   runOnStartup?: boolean;
   checks?: RoutineCheck[] | null;
   access?: RoutineAccess | null;
@@ -190,14 +170,7 @@ interface RoutineFile {
   ownerNotices?: RoutineOwnerNotice[];
 }
 
-
-export type RoutineRequestOwner = Pick<RoutineRequestReceipt, "requestId" | "messageId" | "botId" | "threadId">;
-
 type ResultsThreadAllocation = { botId: string; threadId: string };
-
-function routineRequestOwnerKey(owner: RoutineRequestOwner): string {
-  return JSON.stringify([owner.requestId, owner.messageId, owner.botId, owner.threadId]);
-}
 
 /** What a routine's checks found: items for one AI run, a sentence while an app cannot be read, and the next time they
  * have something to do on time. */
@@ -261,6 +234,8 @@ export interface RoutineManagerOptions {
   limitResetAt?: (engine: string) => number | null;
   /** The bot has a backup engine to continue on when its own engine's usage limit refuses a run. */
   limitBackup?: (botId: string) => boolean;
+  /** config.json "retryOnFailure": the retry fields every routine starts from. */
+  retryPolicy?: () => Partial<RoutineRetryPolicy> | undefined;
   /** Work this thread handed to another bot is still open, so its wait is not only on the person. */
   handedOffWorkLive?: (threadId: string) => boolean;
   launchId?: string;
@@ -274,24 +249,12 @@ const WAKE_HORIZON_MS = 60 * 60_000;
 
 export const ROUTINE_RESTARTED = "OpenMausBot restarted while this routine was running";
 const MAX_RUNS = 2_000;
-const ROUTINE_REQUEST_ACTIONS = new Set<RoutineRequestOperation["action"]>([
-  "create",
-  "update",
-  "pause",
-  "resume",
-  "run_now",
-  "delete",
-]);
-
-function isRoutineRequestAction(value: unknown): value is RoutineRequestOperation["action"] {
-  return typeof value === "string" && ROUTINE_REQUEST_ACTIONS.has(value as RoutineRequestOperation["action"]);
-}
-
 function cloneRoutine(routine: Routine): Routine {
   return {
     ...routine,
     schedule: cloneSchedule(routine.schedule),
     attachments: cloneAttachments(routine.attachments),
+    ...(routine.retryOnFailure ? { retryOnFailure: { ...routine.retryOnFailure } } : {}),
   };
 }
 
@@ -603,6 +566,7 @@ export class RoutineManager {
       attachments: patch.attachments ?? routine.attachments,
       continuity: patch.continuity ?? routine.continuity,
       overlap: Object.hasOwn(patch, "overlap") ? patch.overlap : routine.overlap,
+      retryOnFailure: Object.hasOwn(patch, "retryOnFailure") ? patch.retryOnFailure : routine.retryOnFailure,
       runOnStartup: patch.runOnStartup ?? routine.runOnStartup,
       checks: Object.hasOwn(patch, "checks") ? patch.checks : routine.checks,
       access: Object.hasOwn(patch, "access") ? patch.access : routine.access,
@@ -632,6 +596,7 @@ export class RoutineManager {
       });
       if (!clean.continuity) delete routine.continuity;
       if (clean.overlap !== "queue") delete routine.overlap;
+      if (!clean.retryOnFailure) delete routine.retryOnFailure;
       if (!clean.runOnStartup) delete routine.runOnStartup;
       if (!clean.access) delete routine.access;
       if (!clean.deliver) delete routine.deliver;
@@ -1012,7 +977,7 @@ export class RoutineManager {
       for (const run of this.runs) {
         if (!["running", "waiting"].includes(run.status) || run.startedAt == null || run.timeoutMinutes == null ||
           activeMs(run, now) < run.timeoutMinutes * 60_000) continue;
-        await this.stopRun(run, `Stopped after reaching the ${run.timeoutMinutes}-minute run limit`, "limit-reached");
+        await this.limitReached(run, `Stopped after reaching the ${run.timeoutMinutes}-minute run limit`);
       }
       const isDue = (routine: Routine) => routine.enabled && this.targetState(routine) !== "missing" && (!routine.checks
         ? routine.nextRunAt != null && routine.nextRunAt <= now
@@ -1106,6 +1071,11 @@ export class RoutineManager {
             }
             continue;
           }
+        }
+        if (cancelOvertakenRetry(this.runs, run, this.retryContext(run), now)) {
+          this.save();
+          this.emitRun(run);
+          continue;
         }
         const checked = triggerSource === "webhook" || run.checkKey ? undefined : this.routines.find((routine) => routine.id === run.routineId && routine.checks);
         if (checked) {
@@ -1307,7 +1277,7 @@ export class RoutineManager {
     this.failureFacts.delete(run.id);
     if (this.closing) return;
     const backupReady = facts.limitResetsAt !== undefined && this.options.limitBackup?.(run.botId) === true;
-    const recovery = recoverRun(run, failure, { ...facts, ...(backupReady ? { backupReady } : {}) }, this.now(), this.ownerNotices);
+    const recovery = recoverRun(run, failure, { ...facts, ...(backupReady ? { backupReady } : {}) }, this.now(), this.ownerNotices, this.retryContext(run));
     if (!recovery.queued) this.failRun(run, recovery.error, "failed", recovery.alert);
     else {
       this.save();
@@ -1355,6 +1325,21 @@ export class RoutineManager {
     if (run.status !== "waiting" || run.waitingSince === undefined) run.waitingSince = this.now();
     run.status = "waiting";
     run.attention = attention;
+  }
+
+  private retryContext(run: RoutineRun): RetryContext {
+    return retryContextFor(this.runs, run, this.options.retryPolicy?.(), this.routines.find((candidate) => candidate.id === run.routineId)?.retryOnFailure);
+  }
+
+  /** A bot's run past its run limit starts again by its retry policy; anything else stops and fails. */
+  private async limitReached(run: RoutineRun, detail: string) {
+    const threadId = run.threadId;
+    this.failureFacts.delete(run.id);
+    const recovery = recoverTimeout(run, detail, this.now(), this.retryContext(run));
+    if (!recovery.queued) return this.stopRun(run, recovery.error, "limit-reached");
+    this.save();
+    this.emitRun(run);
+    if (threadId) await this.options.interruptTurn?.(run.botId, threadId).catch(() => {});
   }
 
   private async stopRun(run: RoutineRun, detail: string, status: "stopped" | "limit-reached") {
