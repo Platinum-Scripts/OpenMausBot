@@ -9000,6 +9000,7 @@ routines = new RoutineManager({
   skipStartupRuns: Boolean(CLOUD_HOME) && wokeFromSleep(DATA_DIR), // a Cloud home waking from a sleep it was stopped for
   hasPendingDelegations: runtimeWorkPending, handedOffWorkLive: (threadId) => coordinator.outstandingFor(threadId).length > 0,
   routineTurn: (threadId) => directRequestOwners.get(threadId)?.automation !== undefined,
+  threadSettled: (botId, threadId) => !threadBusy(botId, threadId) && !settlingTurns.has(threadId) && !directTurnBots.has(threadId) && queuedThreadPosition(botId, threadId) === null,
   botState: unattendedDispatchState,
   goalState: (groupId, coordinatorBotId) => {
     if (!groupId) return unattendedDispatchState(coordinatorBotId);

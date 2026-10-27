@@ -23,7 +23,7 @@ import {
   routineFailure, routineHostWarning, skipNeedsNotice, supersededBy,
 } from "./routine-execution.ts";
 import {
-  cancelOvertakenRetry, dispatchRefusal, engineFacts, loadOwnerNotices, recoverRun, recoverTimeout, requeueOnce, retryContextFor, weekRuns, type RetryContext,
+  cancelOvertakenRetry, dispatchRefusal, engineFacts, loadOwnerNotices, recoverRun, recoverTimeout, requeueOnce, retryContextFor, settleTimeoutRetry, weekRuns, type RetryContext,
   type RoutineAlert, type RoutineFailureFacts, type RoutineOwnerNotice,
 } from "./routine-recovery.ts";
 import { activeMs, askOf, settleAsk, waitingFor, type RoutineRunAsk } from "./routine-waits.ts";
@@ -109,6 +109,7 @@ export interface RoutineRun {
   retryAt?: number;
   retried?: RoutineRetryCause;
   retries?: number;
+  timeoutPending?: boolean;
   /** When its current wait began; read only while the run is waiting. */
   waitingSince?: number;
   asked?: RoutineRunAsk;
@@ -217,6 +218,7 @@ export interface RoutineManagerOptions {
     onDispatchError: (message: string) => void,
   ) => Promise<void>;
   interruptTurn?: (botId: string, threadId: string) => Promise<void>;
+  threadSettled?: (botId: string, threadId: string) => boolean;
   interruptGoal?: (
     groupId: string | undefined,
     threadId: string,
@@ -1072,11 +1074,13 @@ export class RoutineManager {
             continue;
           }
         }
-        if (cancelOvertakenRetry(this.runs, run, this.retryContext(run), now)) {
+        const retry = this.retryContext(run);
+        if (cancelOvertakenRetry(this.runs, run, retry, now)) {
           this.save();
           this.emitRun(run);
           continue;
         }
+        if (!settleTimeoutRetry(run, retry, this.options.threadSettled)) continue;
         const checked = triggerSource === "webhook" || run.checkKey ? undefined : this.routines.find((routine) => routine.id === run.routineId && routine.checks);
         if (checked) {
           void this.runChecks(checked.id, checkHold(this.runs, checked.id, now, run.id), run.id);
@@ -1339,7 +1343,10 @@ export class RoutineManager {
     if (!recovery.queued) return this.stopRun(run, recovery.error, "limit-reached");
     this.save();
     this.emitRun(run);
-    if (threadId) await this.options.interruptTurn?.(run.botId, threadId).catch(() => {});
+    if (threadId) {
+      try { await this.options.interruptTurn?.(run.botId, threadId); }
+      catch { this.failRun(run, "Not retried: could not interrupt the previous execution"); }
+    }
   }
 
   private async stopRun(run: RoutineRun, detail: string, status: "stopped" | "limit-reached") {

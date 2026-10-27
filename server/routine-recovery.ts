@@ -162,9 +162,12 @@ export function retryContextFor(runs: readonly RoutineRun[], run: RoutineRun, wo
 
 /** A queued automatic retry whose routine moved on meanwhile is cancelled instead of started; true when it was. */
 export function cancelOvertakenRetry(runs: readonly RoutineRun[], run: RoutineRun, retry: RetryContext, now: number): boolean {
-  const overtaken = retry.on && run.retried !== undefined && run.retried !== "restarted" ? overtakenBy(runs, run) : null;
-  if (overtaken) Object.assign(run, { status: "cancelled", attention: undefined, finishedAt: now, error: `Not retried: ${overtaken}` } satisfies Partial<RoutineRun>);
-  return overtaken !== null;
+  if (run.retried === undefined || run.retried === "restarted") return false;
+  const refused = overtakenBy(runs, run) ?? (retriesOf(run) > retry.policy.max ||
+    (run.retried === "timeout" && (!retry.on || retry.policy.onTimeout === "off"))
+    ? "the current retry policy no longer permits this attempt" : null);
+  if (refused) Object.assign(run, { status: "cancelled", attention: undefined, finishedAt: now, error: `Not retried: ${refused}` } satisfies Partial<RoutineRun>);
+  return refused !== null;
 }
 
 /** A run that reached its run limit: it starts again with a fresh limit, in its own thread ("resume") or a new one
@@ -177,12 +180,20 @@ export function recoverTimeout(run: RoutineRun, limitReached: string, now: numbe
   if (retry.refusal) return { queued: false, error: `${given}. Not retried: ${retry.refusal}` };
   if (!requeue(run, "timeout", limitReached, now + retry.policy.delayMinutes * 60_000, retry.policy.max)) return { queued: false, error: given };
   for (const field of ["waitedMs", "asked", "waitingSince", "deferredAt", "deferredNoticeAt"] as const) delete run[field];
-  if (retry.policy.onTimeout === "rerun") delete run.threadId;
+  run.timeoutPending = true;
   const limit = run.timeoutMinutes ? `a fresh ${run.timeoutMinutes}-minute run limit` : "a fresh run limit";
   run.attention = retry.policy.onTimeout === "resume"
     ? `Reached its run limit; continuing in its own thread with ${limit} at ${when(run.retryAt!)}`
     : `Reached its run limit; starting over in a new thread with ${limit} at ${when(run.retryAt!)}`;
   return { queued: true };
+}
+
+export function settleTimeoutRetry(run: RoutineRun, retry: RetryContext, settled?: (botId: string, threadId: string) => boolean): boolean {
+  if (!run.timeoutPending) return true;
+  if (!run.threadId || settled?.(run.botId, run.threadId) !== true) return false;
+  if (retry.policy.onTimeout === "rerun") delete run.threadId;
+  delete run.timeoutPending;
+  return true;
 }
 
 /** The next start's own line, so a run that already did part of its work does not do it twice. */
