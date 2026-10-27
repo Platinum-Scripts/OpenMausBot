@@ -21,6 +21,7 @@ export interface FeedSegment {
 export interface HeldFeed {
   entries: FeedEntry<Message>[];
   hasMore: boolean;
+  revision?: string;
 }
 
 const entryKey = (entry: FeedEntry<Message>) => `${entry.threadId}:${entry.message.id}`;
@@ -79,7 +80,7 @@ export function feedSegments(rows: readonly FeedRow[]): FeedSegment[] {
  * older page asked for from the replaced hold no longer fits it. An absent line tied at the page boundary also
  * restarts paging: timestamps alone cannot distinguish a valid earlier tie from a deleted branch message. */
 export function replacesHold(held: HeldFeed, page: WireFeedPage): boolean {
-  if (held.entries.length === 0 || !page.hasMore) return true;
+  if (held.revision !== page.revision || held.entries.length === 0 || !page.hasMore) return true;
   const items = page.items as FeedEntry<Message>[];
   const boundary = items[0]?.message.at;
   const fresh = new Set(items.map(entryKey));
@@ -92,12 +93,12 @@ export function replacesHold(held: HeldFeed, page: WireFeedPage): boolean {
  * away or archived, so it goes. Ambiguous ties restart the hold and are fetched again by cursor. */
 export function mergeFeedPage(held: HeldFeed | undefined, page: WireFeedPage, which: "newest" | "older"): HeldFeed {
   const items = page.items as FeedEntry<Message>[];
-  if (!held || (which === "newest" && replacesHold(held, page))) return { entries: items, hasMore: page.hasMore };
+  if (!held || (which === "newest" && replacesHold(held, page))) return { entries: items, hasMore: page.hasMore, revision: page.revision };
   const fresh = new Map(items.map((item) => [entryKey(item), item]));
   const kept = held.entries.filter((entry) => !fresh.has(entryKey(entry)));
-  if (which === "older") return { entries: [...items, ...kept], hasMore: page.hasMore };
+  if (which === "older") return { entries: [...items, ...kept], hasMore: page.hasMore, revision: page.revision };
   const from = items[0]?.message.at ?? Number.POSITIVE_INFINITY;
-  return { entries: [...kept.filter((entry) => entry.message.at <= from), ...items], hasMore: held.hasMore };
+  return { entries: [...kept.filter((entry) => entry.message.at <= from), ...items], hasMore: held.hasMore, revision: page.revision };
 }
 
 let mode = false;

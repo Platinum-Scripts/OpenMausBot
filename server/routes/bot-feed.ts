@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { singleChatFeedThreads, type SingleChatFeedTask } from "../../shared/single-chat-feed.ts";
 import { botFeedPage } from "../bot-feed.ts";
 import type { VisibleSet } from "../bot-visibility.ts";
@@ -6,7 +8,7 @@ import type { Message, Store } from "../store.ts";
 import { PASS, type RouteContext, type RouteHandler } from "./table.ts";
 
 export interface BotFeedRouteDeps {
-  store: Pick<Store, "bot" | "activePath">;
+  store: Pick<Store, "bot" | "activePath" | "historyRevision">;
   defaultPage: number;
   /** undefined = absent, null = unusable (host/message-pages.ts). */
   pageSize(raw: string | null): number | null | undefined;
@@ -46,6 +48,8 @@ export function createBotFeedRoutes(deps: BotFeedRouteDeps): RouteHandler {
     return json(res, 200, {
       items: page.items.map(({ threadId: id, message }) => ({ threadId: id, message: deps.slim(message) })),
       hasMore: page.hasMore,
+      // Which conversations are shown and each one's history revision: a held older page from another set no longer fits.
+      revision: createHash("sha256").update(JSON.stringify(shown.map((task) => [task.threadId, deps.store.historyRevision(task.threadId)]).sort())).digest("hex"),
     });
   };
 }

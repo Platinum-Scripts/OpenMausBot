@@ -107,6 +107,71 @@ describe("GET /api/bots/:id/feed", () => {
     expect(texts.filter((text: string) => text.startsWith("latest"))).toEqual(["latest, edited"]);
   });
 
+  it("versions older branch changes even when activity and the newest page do not change", async () => {
+    const { store, bot, main, topic } = fixture();
+    const source = store.activePath(topic)[0]!;
+    const branch = store.branchMessage(topic, source.id, "alternative")!;
+    store.patchMessage(topic, branch.id, { at: 2_000 });
+    store.setActiveLeaf(topic, source.id);
+    const base = await serve(store);
+    const path = `/api/bots/${bot.id}/feed?limit=1`;
+    const before = (await get(base, path)).body;
+    const stamp = store.bot(bot.id)!.tasks!.find(task => task.threadId === topic)!.updatedAt;
+    store.setActiveLeaf(topic, branch.id);
+    const after = (await get(base, path)).body;
+    expect(after.items).toEqual(before.items);
+    expect(after.revision).toEqual(expect.any(String));
+    expect(after.revision).not.toBe(before.revision);
+    expect(store.bot(bot.id)!.tasks!.find(task => task.threadId === topic)!.updatedAt).toBe(stamp);
+    // Held over a restart, history read before it could miss a change made while away: a new epoch refetches it.
+    expect((await get(await serve(new Store(() => sonnet)), path)).body.revision).not.toBe(after.revision);
+    store.appendMessage(main, { role: "user", kind: "text", text: "append", at: 6_000 });
+    expect((await get(base, path)).body.revision).toBe(after.revision);
+    store.setActiveLeaf(topic, branch.id);
+    expect((await get(base, path)).body.revision).toBe(after.revision);
+  });
+
+  it.each(["patch", "reparent", "insert", "import", "backdate", "fork append"])("versions %s changes outside the newest page", async (change) => {
+    const { store, bot, topic } = fixture();
+    const first = store.activePath(topic)[0]!;
+    const base = await serve(store);
+    const path = `/api/bots/${bot.id}/feed?limit=1`;
+    const before = (await get(base, path)).body.revision;
+    if (change === "patch") store.patchMessage(topic, first.id, { text: "revised" });
+    if (change === "reparent") store.patchMessage(topic, store.activePath(topic)[1]!.id, { parentId: null });
+    if (change === "insert") store.insertMessageAfter(topic, first.id, { role: "user", kind: "text", text: "inserted" });
+    if (change === "import") store.importTranscript(topic, [{ id: "imported", at: 1, role: "user", kind: "text", text: "imported", parentId: null }], "imported", []);
+    if (change === "backdate") store.appendMessage(topic, { role: "user", kind: "text", text: "backdated", at: 1 });
+    if (change === "fork append") store.appendMessage(topic, { role: "user", kind: "text", text: "forked", parentId: null });
+    expect((await get(base, path)).body.revision).not.toBe(before);
+  });
+
+  it("tells clients once per tick, after the rewrite is stored, and not for turn completion stamps", async () => {
+    const { store, bot, topic } = fixture();
+    const changes: string[] = [];
+    store.onChange((change) => { if (change.type === "bot") changes.push(store.historyRevision(topic)); });
+    const [first, second] = store.activePath(topic);
+    const before = store.historyRevision(topic);
+    store.patchMessage(topic, first!.id, { turnTerminal: true, turnCompletedAt: 9 });
+    expect(store.historyRevision(topic)).toBe(before);
+    store.patchMessage(topic, first!.id, { text: "one" });
+    store.patchMessage(topic, second!.id, { text: "two" });
+    expect(changes).toEqual([]);
+    await Promise.resolve();
+    expect(changes).toEqual([store.historyRevision(topic)]);
+    expect(changes[0]).not.toBe(before);
+    expect(store.bot(bot.id)).toBeDefined();
+  });
+
+  it("does not include invisible thread revisions in the feed token", async () => {
+    const { store, bot, topic } = fixture();
+    const base = await serve(store, { threads: [topic] });
+    const path = `/api/bots/${bot.id}/feed?limit=1`;
+    const before = (await get(base, path)).body.revision;
+    store.branchMessage(topic, store.activePath(topic)[0]!.id, "hidden change");
+    expect((await get(base, path)).body.revision).toBe(before);
+  });
+
   it("refuses an unknown or unseen bot and leaves out conversations the viewer may not see", async () => {
     const { store, bot, topic } = fixture();
     expect((await get(await serve(store), "/api/bots/nobody/feed")).status).toBe(404);

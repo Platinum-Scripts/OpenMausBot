@@ -91,6 +91,48 @@ describe("useSingleChatFeed", () => {
     expect(seen?.pending).toBe(false);
   });
 
+  it.each(["OFF/reopen", "background change", "unchanged activity"])("invalidates older cached branch history after %s", async (change) => {
+    const newest = { ...page(Array.from({ length: 200 }, (_, i): [string, Message] => ["main", said(`new-${i}`, 1000 + i)]), true), revision: "branch-1" };
+    fixture.api.mockResolvedValueOnce(newest);
+    await show(base);
+    fixture.api.mockResolvedValueOnce({ ...page([["topic", said("obsolete-branch", 1)]]), revision: "branch-1" });
+    await act(async () => { seen!.loadOlder(); });
+    expect(ids()).toContain("topic:obsolete-branch");
+    expect(seen?.hasMore).toBe(false);
+    if (change === "OFF/reopen") await show(base, false);
+    // A branch replacement is below the newest page, which still overlaps the cached main topic.
+    fixture.api.mockResolvedValueOnce({ ...newest, revision: "branch-2" });
+    await show({ ...base, tasks: [base.tasks![0]!, { ...base.tasks![1]!, historyRevision: "branch-2", updatedAt: change === "unchanged activity" ? 20 : 50 }] });
+    expect(ids()).not.toContain("topic:obsolete-branch");
+    expect(seen?.hasMore).toBe(true);
+    fixture.api.mockResolvedValueOnce({ ...page([["topic", said("replacement-branch", 2)]]), revision: "branch-2" });
+    await act(async () => { seen!.loadOlder(); });
+    expect(ids()).toContain("topic:replacement-branch");
+  });
+
+  it("retains fully loaded scroll-back across an append-only refresh", async () => {
+    const newest = { ...page([["main", said("m2", 30)]], true), revision: "same" };
+    fixture.api.mockResolvedValueOnce(newest);
+    await show(base);
+    fixture.api.mockResolvedValueOnce({ ...page([["topic", said("old", 1)]]), revision: "same" });
+    await act(async () => { seen!.loadOlder(); });
+    fixture.api.mockResolvedValueOnce({ ...page([["main", said("m2", 30)], ["topic", said("append", 50)]], true), revision: "same" });
+    await show({ ...base, tasks: [base.tasks![0]!, { ...base.tasks![1]!, updatedAt: 50 }] });
+    expect(ids()).toEqual(["topic:old", "main:m2", "topic:append"]);
+    expect(seen?.hasMore).toBe(false);
+  });
+
+  it("restarts instead of joining an older page from a different history revision", async () => {
+    fixture.api.mockResolvedValueOnce({ ...page([["topic", said("obsolete", 20)]], true), revision: "old" });
+    await show(base);
+    fixture.api.mockResolvedValueOnce({ ...page([["topic", said("replacement", 10)]]), revision: "new" });
+    fixture.api.mockResolvedValueOnce({ ...page([["topic", said("fresh", 25)]], true), revision: "new" });
+    await act(async () => { seen!.loadOlder(); });
+    expect(ids()).toEqual(["topic:fresh", "main:m2"]);
+    expect(feedCalls().at(-1)).toBe("/api/bots/bot/feed?limit=200");
+    expect(seen?.hasMore).toBe(true);
+  });
+
   it("says so when the history fails to load, and loads it on retry", async () => {
     fixture.api.mockRejectedValueOnce(new Error("offline"));
     await show(base);

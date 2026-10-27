@@ -322,6 +322,10 @@ export class Store {
   private registeringInitialSections = true;
   /** Clearing this slot must not clear a concurrently running task's activity. */
   private legacyActivities = new Map<string, BotActivity>();
+  /** Single chat feed validity. Kept in memory: a restart issues a new epoch, so no client keeps history held across it. */
+  private readonly historyEpoch = newId();
+  private historyRevisions = new Map<string, string>();
+  private historyBots = new Set<string>();
 
   constructor(
     defaultSelection: () => ModelSelection,
@@ -935,6 +939,7 @@ export class Store {
 
   private deleteThreadRecord(threadId: string, dbAlreadyDeleted = false) {
     this.threads.delete(threadId);
+    this.historyRevisions.delete(threadId);
     if (!dbAlreadyDeleted) mdb.deleteThread(threadId);
     for (const file of [
       messagesFile(threadId),
@@ -1155,10 +1160,30 @@ export class Store {
     return { messages: messages.slice(start), hasMore: start > 0, activeLeafId };
   }
 
+  /** Changes when a conversation's existing history is rewritten (an edit, a branch switch, an insert, a backdated
+   * line), not when a message appends at its end. GET /api/bots/:id/feed folds it into each page's revision. */
+  historyRevision(threadId: string): string {
+    return this.historyRevisions.get(threadId) ?? this.historyEpoch;
+  }
+
+  /** Call after the rewrite is stored: a feed read in between then holds new history under the old revision, which the
+   * bump invalidates, never old history under the new one. One bot broadcast per bot per tick, however many rows change. */
+  private invalidateThreadHistory(threadId: string): void {
+    this.historyRevisions.set(threadId, newId());
+    const botId = this.botByThread(threadId)?.id;
+    if (!botId || this.historyBots.has(botId)) return;
+    this.historyBots.add(botId);
+    queueMicrotask(() => {
+      this.historyBots.delete(botId);
+      if (this.bot(botId)) this.emit({ type: "bot", botId });
+    });
+  }
+
   importTranscript(threadId: string, messages: Message[], activeLeafId: string | null, relinked?: ReadonlyArray<{ id: string; parentId: string | null }>): void {
     if (!relinked && this.messagesFor(threadId).length) throw new Error("Cannot import over an existing conversation");
     mdb.importThread(threadId, messages, activeLeafId, relinked);
     this.threads.delete(threadId);
+    this.invalidateThreadHistory(threadId);
     const newest = messages.reduce((max, message) => Math.max(max, message.at), Number.NEGATIVE_INFINITY);
     const newestOrder = messages.reduce((max, message) => movesThreadToTop(message) ? Math.max(max, message.turnCompletedAt ?? message.at) : max, Number.NEGATIVE_INFINITY);
     if (Number.isFinite(newest)) this.noteThreadActivity(threadId, newest, Number.isFinite(newestOrder), newestOrder);
@@ -1198,6 +1223,9 @@ export class Store {
     const persist = () => { mdb.appendMessage(threadId, full); return full; };
     const committed = command ? runCommand(command, persist) : persist();
     if (committed.id !== full.id) return committed;
+    // A fork or a line older than the leaf lands inside held history rather than after it.
+    const leaf = t.activeLeafId === null ? undefined : t.messages.findLast((candidate) => candidate.id === t.activeLeafId);
+    if (full.parentId !== t.activeLeafId || (leaf && full.at < leaf.at)) this.invalidateThreadHistory(threadId);
     t.messages.push(full);
     t.activeLeafId = full.id;
     if (full.kind === "screen") {
@@ -1220,6 +1248,7 @@ export class Store {
     const children = t.messages.filter((m) => m.parentId === anchorId);
     t.messages.push(full);
     mdb.insertMessage(threadId, full);
+    this.invalidateThreadHistory(threadId);
     if (full.kind === "screen") {
       for (const pruned of this.pruneScreenFrames(t)) {
         mdb.updateMessage(threadId, pruned);
@@ -1277,6 +1306,7 @@ export class Store {
     t.messages.push(full);
     t.activeLeafId = full.id;
     mdb.appendMessage(threadId, full);
+    this.invalidateThreadHistory(threadId);
     this.noteThreadActivity(threadId, full.at, true);
     this.emit({ type: "message", threadId, message: full });
     // A client adopts a new message as its leaf only when it chains onto its leaf; a sibling needs this pointer.
@@ -1293,8 +1323,10 @@ export class Store {
       if (!children.length) break;
       cur = children.reduce((a, b) => (b.at >= a.at ? b : a)).id;
     }
+    const moved = t.activeLeafId !== cur;
     t.activeLeafId = cur;
     mdb.setActiveLeaf(threadId, cur);
+    if (moved) this.invalidateThreadHistory(threadId);
     this.emit({ type: "thread", threadId, activeLeafId: cur });
     return cur;
   }
@@ -1311,6 +1343,8 @@ export class Store {
     if (!applied) return committed;
     if (!movesThreadToTop(t.messages[idx]) && movesThreadToTop(next)) this.noteThreadActivity(threadId, next.at, true, next.turnCompletedAt ?? next.at);
     t.messages[idx] = next;
+    // Turn completion stamps change neither what a line says nor where it sits.
+    if (Object.keys(patch).some((key) => key !== "turnTerminal" && key !== "turnCompletedAt")) this.invalidateThreadHistory(threadId);
     this.emit({ type: "message.patch", threadId, message: next });
     return next;
   }

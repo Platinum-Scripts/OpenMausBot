@@ -154,6 +154,8 @@ export interface WireTask {
   /** Epoch ms of the newest message, or createdAt when the thread has none.
    * Server-derived. Clients must not write it. */
   updatedAt?: number;
+  /** Changes when existing history is rewritten or the server restarts, not when a message appends. Server-owned. */
+  historyRevision?: string;
   lastThreadOrderAt?: number;
   /** 0 means "until new activity"; a future epoch ms means "until then", and
    * an expired value reads as absent. Absent = not snoozed. */

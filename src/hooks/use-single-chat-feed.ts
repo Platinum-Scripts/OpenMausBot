@@ -93,6 +93,7 @@ export function useSingleChatFeed(bot: Bot, on: boolean, live: readonly Message[
   const [reload, setReload] = useState(0);
   const threads = useMemo(() => singleChatFeedThreads(bot.tasks ?? [], bot.threadId), [bot.tasks, bot.threadId]);
   const threadIds = useMemo(() => new Set([bot.threadId, ...threads.map((task) => task.threadId)]), [threads, bot.threadId]);
+  const revisions = JSON.stringify(threads.map(task => [task.threadId, task.historyRevision]));
   const elsewhere = threads.filter((task) => task.threadId !== bot.threadId)
     .map((task) => `${task.threadId}@${task.updatedAt ?? task.createdAt}`).join(",");
 
@@ -114,7 +115,7 @@ export function useSingleChatFeed(bot: Bot, on: boolean, live: readonly Message[
         hold(bot.id, { entries: [], hasMore: false, olderFailed: false, ...before, newestFailed: true });
       });
     return () => { current = false; };
-  }, [on, bot.id, bot.threadId, elsewhere, reload]);
+  }, [on, bot.id, bot.threadId, elsewhere, revisions, reload]);
 
   const loadOlder = useCallback(() => {
     const state = feeds.get(bot.id);
@@ -129,7 +130,13 @@ export function useSingleChatFeed(bot: Bot, on: boolean, live: readonly Message[
     api<WireFeedPage>(`${feedPath(bot.id)}&threadId=${encodeURIComponent(oldest.threadId)}&before=${encodeURIComponent(oldest.message.id)}`, { background: true })
       .then((page) => {
         const now = mine();
-        if (now) hold(bot.id, { ...now, ...mergeFeedPage(now, page, "older"), olderRequest: undefined, olderBeforeAt: undefined });
+        if (!now) return;
+        if (now.revision !== page.revision) {
+          drop(bot.id);
+          setReload((n) => n + 1);
+          return;
+        }
+        hold(bot.id, { ...now, ...mergeFeedPage(now, page, "older"), olderRequest: undefined, olderBeforeAt: undefined });
       })
       .catch((error: unknown) => {
         const now = mine();

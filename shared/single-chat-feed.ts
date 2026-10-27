@@ -4,6 +4,7 @@ export interface SingleChatFeedTask {
   threadId: string;
   createdAt?: number;
   updatedAt?: number;
+  historyRevision?: string;
   archivedAt?: number;
   routineRunId?: string;
 }
@@ -19,6 +20,8 @@ export interface FeedEntry<M = WireMessage> {
 export interface WireFeedPage {
   items: FeedEntry[];
   hasMore: boolean;
+  /** Opaque: the shown conversations and their history revisions. Appending keeps it; rewriting history changes it. */
+  revision?: string;
 }
 
 const recency = (task: SingleChatFeedTask): number => task.updatedAt ?? task.createdAt ?? 0;
