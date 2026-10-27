@@ -14,5 +14,7 @@ health check, automatic rollback. Conflict/build failure: running build untouche
 
 Status: `/home/maus/omb-builds/last-update.json`, `/home/maus/omb-builds/last-update.log`, `/var/log/omb-fork-update.log`.
 
+Install `server/fork/omb-pcc-ticket.py` alongside `/opt/omb-ops/omb-fork-update.sh` when updating the ops scripts. The helper sends JSON on SSH stdin, not interpolated shell arguments, and accepts only a successful `PCC-<number>` receipt. `ticket_state=unconfirmed` means transport or creation failed or was ambiguous; reconcile the `omb-fork-update-YYYY-MM-DD` dedupe key in PCC before retrying. A ticket failure never overwrites the pipeline's failed stage or claims success. Raw build logs remain server-local.
+
 Rollback: `/opt/omb-ops/omb-fork-update.sh rollback` (previous build) or `rollback-npm`
 (remove `/etc/systemd/system/openmausbot.service.d/30-fork.conf`, run the npm install again).

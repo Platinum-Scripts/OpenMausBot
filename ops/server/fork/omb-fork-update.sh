@@ -34,21 +34,22 @@ PY
 export RUN_ID MODE=${1:-update}
 asmaus(){ sudo -u maus bash -c ". /home/maus/src/build-env.sh; cd $SRC; $*"; }
 pcc_ticket(){ # title body
-  local t="$1" b="$2"
-  sudo -u maus ssh -o BatchMode=yes -o ConnectTimeout=15 -i /home/maus/.ssh/factory_ops_ed25519 "$FACTORY_SSH" \
-    "cd /opt/factory-ops && python3 -c 'import fo,sys; print(fo.file_issue(\"PCC\", sys.argv[1], sys.stdin.read(), \"omb-fork-update-\"+sys.argv[2], dedupe_minutes=720))' \"$t\" \"$(date -u +%F)\"" <<<"$b" 2>&1 | tail -1
+  FACTORY_SSH="${FACTORY_SSH:-}" python3 "$(dirname "${BASH_SOURCE[0]}")/omb-pcc-ticket.py" "$1" <<<"$2"
 }
 fail(){ # stage msg
   log "FAIL at $1: $2"; status "$1" 0 "$2"
-  local tk; tk=$(pcc_ticket "OpenMausBot fork $MODE failed at $1 (running build untouched)" \
+  local tk ticket_state=confirmed; tk=$(pcc_ticket "OpenMausBot fork $MODE failed at $1 (running build untouched)" \
 "The OpenMausBot fork pipeline (omb-fork-update.sh $MODE, run $RUN_ID, OMB server $(hostname)) failed at stage: $1.
 Detail: $2
 The running build was left alone (or rolled back automatically). Repo: /home/maus/src/OpenMausBot (fork Platinum-Scripts/OpenMausBot; main mirrors milind-soni/OpenMausBot main; deploy = main + our commits).
-Log tail:
-$(tail -n 60 $RLOG)
-Fix: resolve the conflict/build failure on the fork's deploy branch (rebase our commits onto main), push deploy, then run on the OMB server: touch /home/maus/omb-builds/update-request (or as root: /opt/omb-ops/omb-fork-update.sh update). Acceptance: last-update.json shows stage=done ok=true.")
-  log "PCC ticket: $tk"; python3 - "$tk" <<'PY'
-import json,sys; p="/home/maus/omb-builds/last-update.json"; d=json.load(open(p)); d["ticket"]=sys.argv[1]; json.dump(d,open(p,"w"),indent=1)
+Inspect the server-local pipeline log for diagnostics; raw build output is not copied into tickets.
+Fix: resolve the conflict/build failure on the fork's deploy branch (rebase our commits onto main), push deploy, then run on the OMB server: touch /home/maus/omb-builds/update-request (or as root: /opt/omb-ops/omb-fork-update.sh update). Acceptance: last-update.json shows stage=done ok=true.") || { tk=""; ticket_state=unconfirmed; }
+  log "PCC ticket: $ticket_state ${tk}"; python3 - "$tk" "$ticket_state" <<'PY'
+import json,os,sys
+p="/home/maus/omb-builds/last-update.json"
+d=json.load(open(p)); d.pop("ticket",None); d["ticket_state"]=sys.argv[2]
+if sys.argv[1]: d["ticket"]=sys.argv[1]
+json.dump(d,open(p+".tmp","w"),indent=1); os.replace(p+".tmp",p); os.chmod(p,0o644)
 PY
   exit 1; }
 api(){ curl -sS -m 20 -H "Authorization: Bearer $(cat $TOKF)" "$API$1"; }
