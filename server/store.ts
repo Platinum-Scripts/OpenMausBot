@@ -1160,8 +1160,8 @@ export class Store {
     return { messages: messages.slice(start), hasMore: start > 0, activeLeafId };
   }
 
-  /** Changes when a conversation's existing history is rewritten (an edit, a branch switch, an insert, a backdated
-   * line), not when a message appends at its end. GET /api/bots/:id/feed folds it into each page's revision. */
+  /** Changes when a conversation's history is restructured (an edit, a branch switch, an insert, a moved or backdated
+   * line), not when a message appends at its end or a line changes in place. GET /api/bots/:id/feed folds it into each page's revision. */
   historyRevision(threadId: string): string {
     return this.historyRevisions.get(threadId) ?? this.historyEpoch;
   }
@@ -1341,10 +1341,12 @@ export class Store {
     const persist = () => { mdb.updateMessage(threadId, next); applied = true; return next; };
     const committed = command ? runCommand(command, persist) : persist();
     if (!applied) return committed;
-    if (!movesThreadToTop(t.messages[idx]) && movesThreadToTop(next)) this.noteThreadActivity(threadId, next.at, true, next.turnCompletedAt ?? next.at);
+    const previous = t.messages[idx];
+    if (!movesThreadToTop(previous) && movesThreadToTop(next)) this.noteThreadActivity(threadId, next.at, true, next.turnCompletedAt ?? next.at);
     t.messages[idx] = next;
-    // Turn completion stamps change neither what a line says nor where it sits.
-    if (Object.keys(patch).some((key) => key !== "turnTerminal" && key !== "turnCompletedAt")) this.invalidateThreadHistory(threadId);
+    // Moving a line rewrites the history around it. A changed line in place does not: clients patch held copies
+    // from the message.patch broadcast (and drop them all when they miss broadcasts).
+    if (next.parentId !== previous.parentId || next.at !== previous.at) this.invalidateThreadHistory(threadId);
     this.emit({ type: "message.patch", threadId, message: next });
     return next;
   }

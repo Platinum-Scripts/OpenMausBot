@@ -131,13 +131,13 @@ describe("GET /api/bots/:id/feed", () => {
     expect((await get(base, path)).body.revision).toBe(after.revision);
   });
 
-  it.each(["patch", "reparent", "insert", "import", "backdate", "fork append"])("versions %s changes outside the newest page", async (change) => {
+  it.each(["move", "reparent", "insert", "import", "backdate", "fork append"])("versions %s changes outside the newest page", async (change) => {
     const { store, bot, topic } = fixture();
     const first = store.activePath(topic)[0]!;
     const base = await serve(store);
     const path = `/api/bots/${bot.id}/feed?limit=1`;
     const before = (await get(base, path)).body.revision;
-    if (change === "patch") store.patchMessage(topic, first.id, { text: "revised" });
+    if (change === "move") store.patchMessage(topic, first.id, { at: 1 });
     if (change === "reparent") store.patchMessage(topic, store.activePath(topic)[1]!.id, { parentId: null });
     if (change === "insert") store.insertMessageAfter(topic, first.id, { role: "user", kind: "text", text: "inserted" });
     if (change === "import") store.importTranscript(topic, [{ id: "imported", at: 1, role: "user", kind: "text", text: "imported", parentId: null }], "imported", []);
@@ -146,16 +146,28 @@ describe("GET /api/bots/:id/feed", () => {
     expect((await get(base, path)).body.revision).not.toBe(before);
   });
 
-  it("tells clients once per tick, after the rewrite is stored, and not for turn completion stamps", async () => {
+  it("keeps the revision for a line changed in place, which clients patch from the broadcast", async () => {
+    const { store, bot, topic } = fixture();
+    const base = await serve(store);
+    const path = `/api/bots/${bot.id}/feed?limit=1`;
+    const before = (await get(base, path)).body.revision;
+    const patched: string[] = [];
+    store.onChange((change) => { if (change.type === "message.patch") patched.push(change.message.text ?? ""); });
+    const first = store.activePath(topic)[0]!;
+    for (const patch of [{ text: "revised" }, { reactions: [{ emoji: "+1", by: "me" }] }, { turnTerminal: true, turnCompletedAt: 9 }]) store.patchMessage(topic, first.id, patch as never);
+    await Promise.resolve();
+    expect((await get(base, path)).body.revision).toBe(before);
+    expect(patched).toEqual(["revised", "revised", "revised"]);
+  });
+
+  it("tells clients once per tick, after the restructure is stored", async () => {
     const { store, bot, topic } = fixture();
     const changes: string[] = [];
     store.onChange((change) => { if (change.type === "bot") changes.push(store.historyRevision(topic)); });
     const [first, second] = store.activePath(topic);
     const before = store.historyRevision(topic);
-    store.patchMessage(topic, first!.id, { turnTerminal: true, turnCompletedAt: 9 });
-    expect(store.historyRevision(topic)).toBe(before);
-    store.patchMessage(topic, first!.id, { text: "one" });
-    store.patchMessage(topic, second!.id, { text: "two" });
+    store.patchMessage(topic, first!.id, { at: 1 });
+    store.patchMessage(topic, second!.id, { at: 2 });
     expect(changes).toEqual([]);
     await Promise.resolve();
     expect(changes).toEqual([store.historyRevision(topic)]);

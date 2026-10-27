@@ -10,6 +10,7 @@ vi.mock("@/state/store", async (importOriginal) => ({ ...await importOriginal<ty
 const { forgetSingleChatFeeds, heldSingleChatFeeds, primeSingleChatFeed, useMarkShownTopicsRead, useSingleChatFeed, useSingleChatFeedTarget } = await import("./use-single-chat-feed");
 const { restoreComposerDraft } = await import("@/lib/drafts");
 const { ApiError } = await import("@/state/api");
+const { publishLiveFrame, publishMissedFrames } = await import("@/lib/live-events");
 
 const said = (id: string, at: number): Message => ({ id, at, role: "user", kind: "text", text: id });
 const page = (items: Array<[string, Message]>, hasMore = false) => ({ items: items.map(([threadId, message]) => ({ threadId, message })), hasMore });
@@ -120,6 +121,89 @@ describe("useSingleChatFeed", () => {
     await show({ ...base, tasks: [base.tasks![0]!, { ...base.tasks![1]!, updatedAt: 50 }] });
     expect(ids()).toEqual(["topic:old", "main:m2", "topic:append"]);
     expect(seen?.hasMore).toBe(false);
+  });
+
+  it("patches a held line changed in place without dropping scroll-back or refetching", async () => {
+    fixture.api.mockResolvedValueOnce({ ...page([["main", said("m2", 30)]], true), revision: "same" });
+    await show(base);
+    fixture.api.mockResolvedValueOnce({ ...page([["topic", said("old", 1)]]), revision: "same" });
+    await act(async () => { seen!.loadOlder(); });
+    await act(async () => { publishLiveFrame({ kind: "message.patch", threadId: "topic", message: { ...said("old", 1), text: "answered" } }); });
+    expect(seen?.rows?.find((row) => row.id === "topic:old")?.message.text).toBe("answered");
+    expect(ids()).toEqual(["topic:old", "main:m2"]);
+    expect(seen?.hasMore).toBe(false);
+    expect(feedCalls()).toHaveLength(2);
+  });
+
+  it.each(["newest", "older"])("applies a patch that lands while the %s page is in flight", async (which) => {
+    const late = deferred<unknown>();
+    if (which === "older") {
+      fixture.api.mockResolvedValueOnce({ ...page([["main", said("m2", 30)]], true), revision: "same" });
+      await show(base);
+    }
+    fixture.api.mockReturnValueOnce(late.promise);
+    if (which === "newest") await show(base);
+    else await act(async () => { seen!.loadOlder(); });
+    await act(async () => { publishLiveFrame({ kind: "message.patch", threadId: "topic", message: { ...said("t1", 20), text: "answered" } }); });
+    await act(async () => { late.resolve({ ...page([["topic", said("t1", 20)]], which === "newest"), revision: "same" }); });
+    expect(seen?.rows?.find((row) => row.id === "topic:t1")?.message.text).toBe("answered");
+  });
+
+  it("drops every hold and reloads after missing live broadcasts", async () => {
+    fixture.api.mockResolvedValueOnce({ ...page([["main", said("m2", 30)]], true), revision: "same" });
+    await show(base);
+    fixture.api.mockResolvedValueOnce({ ...page([["topic", said("old", 1)]]), revision: "same" });
+    await act(async () => { seen!.loadOlder(); });
+    fixture.api.mockResolvedValueOnce({ ...page([["topic", said("fresh", 25)]], true), revision: "same" });
+    await act(async () => { publishMissedFrames(); });
+    expect(feedCalls().at(-1)).toBe("/api/bots/bot/feed?limit=200");
+    expect(ids()).toEqual(["topic:fresh", "main:m2"]);
+    expect(seen?.hasMore).toBe(true);
+  });
+
+  it.each(["resolve", "reject"])("ignores a newest request that %s immediately after broadcasts were missed", async (outcome) => {
+    const late = deferred<unknown>();
+    fixture.api.mockReturnValueOnce(late.promise);
+    await show(base);
+    const refresh = deferred<unknown>();
+    fixture.api.mockReturnValueOnce(refresh.promise);
+    await act(async () => {
+      publishMissedFrames();
+      if (outcome === "resolve") late.resolve(page([["topic", said("stale", 20)]]));
+      else late.reject(new Error("abandoned request"));
+      // Let the promise settle before React cleans up the old effect.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(heldSingleChatFeeds()).toEqual([]);
+    });
+    await act(async () => { refresh.resolve(page([["topic", said("fresh", 25)]])); });
+    expect(ids()).toEqual(["topic:fresh", "main:m2"]);
+    expect(seen?.failed.newest).toBe(false);
+  });
+
+  it("keeps patches when the HTTP promise settles before its page is applied", async () => {
+    const late = deferred<unknown>();
+    fixture.api.mockReturnValueOnce(late.promise);
+    await show(base);
+    await act(async () => {
+      publishLiveFrame({ kind: "message.patch", threadId: "topic", message: { ...said("t1", 20), text: "answered" } });
+      late.resolve(page([["topic", said("t1", 20)]]));
+      await Promise.resolve();
+      publishLiveFrame({ kind: "message.patch", threadId: "topic", message: said("unrelated", 21) });
+    });
+    expect(seen?.rows?.find((row) => row.id === "topic:t1")?.message.text).toBe("answered");
+  });
+
+  it("refetches instead of accepting a page when its concurrent patches exceed the buffer", async () => {
+    const late = deferred<unknown>();
+    fixture.api.mockReturnValueOnce(late.promise);
+    await show(base);
+    fixture.api.mockResolvedValueOnce(page([["topic", said("fresh", 25)]]));
+    await act(async () => {
+      for (let i = 0; i < 501; i++) publishLiveFrame({ kind: "message.patch", threadId: "topic", message: said(`patch-${i}`, i) });
+      late.resolve(page([["topic", said("stale", 20)]]));
+    });
+    expect(feedCalls()).toHaveLength(2);
+    expect(ids()).toEqual(["topic:fresh", "main:m2"]);
   });
 
   it("restarts instead of joining an older page from a different history revision", async () => {

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { orderFeed, type FeedEntry, type WireFeedPage } from "../../shared/single-chat-feed";
 import { useHasComposerDraft } from "@/lib/drafts";
 import { singleChatFeedEnabled, type FeatureFlagConfig } from "@/lib/feature-flags";
+import { listenLiveFrames } from "@/lib/live-events";
 import { feedRows, mergeFeedPage, replacesHold, singleChatFeedTarget, singleChatFeedThreads, type FeedRow, type HeldFeed } from "@/lib/single-chat-feed";
 import { api, ApiError, MESSAGE_PAGE_SIZE, type Action, type Bot, type Message } from "@/state/store";
 
@@ -34,6 +35,83 @@ function drop(botId: string): void {
   if (feeds.delete(botId)) notify();
 }
 
+/** Lines changed in place (message.patch broadcasts) keep the history revision: held copies are patched here, and a page
+ * asked for before a patch and answered after it gets the patch too. Missing broadcasts drops every hold. */
+const PATCHES_KEPT = 500;
+let patchSeq = 0;
+let asking = 0;
+let forgottenSeq = 0;
+let generation = 0;
+const patches = new Map<string, { seq: number; message: Message }>();
+
+function patchHeld(threadId: string, message: Message): void {
+  patchSeq += 1;
+  // Only a page already asked for can come back older than this patch.
+  if (asking === 0) patches.clear();
+  else remember(`${threadId}:${message.id}`, message);
+  let changed = false;
+  for (const [botId, state] of feeds) {
+    const at = state.entries.findIndex((entry) => entry.threadId === threadId && entry.message.id === message.id);
+    if (at === -1) continue;
+    const entries = state.entries.slice();
+    entries[at] = { threadId, message };
+    feeds.set(botId, { ...state, entries });
+    changed = true;
+  }
+  if (changed) notify();
+}
+
+function remember(key: string, message: Message): void {
+  patches.delete(key);
+  patches.set(key, { seq: patchSeq, message });
+  for (const [oldest, { seq }] of patches) {
+    if (patches.size <= PATCHES_KEPT) break;
+    patches.delete(oldest);
+    forgottenSeq = seq;
+  }
+}
+
+/** Keep concurrent patches until the page is applied, not just until its HTTP promise settles. */
+function ask(path: string, apply: (page: WireFeedPage) => void): Promise<void> {
+  asking += 1;
+  const since = patchSeq, started = generation;
+  return api<WireFeedPage>(path, { background: true })
+    .then((answer) => {
+      if (started !== generation) return;
+      const page = patched(answer, since);
+      if (page) apply(page);
+      else forgetHeld();
+    })
+    .finally(() => {
+      asking -= 1;
+      if (asking === 0) patches.clear();
+    });
+}
+
+function forgetHeld(): void {
+  feeds.clear();
+  generation += 1;
+  notify();
+}
+
+/** The page with every patch that arrived after `since`; null when some of those patches are no longer kept. */
+function patched(page: WireFeedPage, since: number): WireFeedPage | null {
+  if (patchSeq === since) return page;
+  if (forgottenSeq > since) return null;
+  return {
+    ...page,
+    items: page.items.map((item) => {
+      const later = patches.get(`${item.threadId}:${item.message.id}`);
+      return later && later.seq > since ? { ...item, message: later.message } : item;
+    }),
+  };
+}
+
+listenLiveFrames({
+  onFrame: (frame) => { if (frame.kind === "message.patch") patchHeld(frame.threadId, frame.message as Message); },
+  onMissedFrames: forgetHeld,
+});
+
 function subscribe(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
@@ -47,6 +125,7 @@ export function primeSingleChatFeed(botId: string, page: WireFeedPage, { failed 
 /** Tests only. */
 export function forgetSingleChatFeeds(): void {
   feeds.clear();
+  patches.clear();
   notify();
 }
 
@@ -90,6 +169,7 @@ const NOT_FAILED = { newest: false, older: false } as const;
  * conversation's newest message changes, and older history pages in on demand. */
 export function useSingleChatFeed(bot: Bot, on: boolean, live: readonly Message[]): SingleChatFeed {
   const held = useSyncExternalStore(subscribe, () => feeds.get(bot.id), () => feeds.get(bot.id));
+  const forgotten = useSyncExternalStore(subscribe, () => generation, () => generation);
   const [reload, setReload] = useState(0);
   const threads = useMemo(() => singleChatFeedThreads(bot.tasks ?? [], bot.threadId), [bot.tasks, bot.threadId]);
   const threadIds = useMemo(() => new Set([bot.threadId, ...threads.map((task) => task.threadId)]), [threads, bot.threadId]);
@@ -100,8 +180,7 @@ export function useSingleChatFeed(bot: Bot, on: boolean, live: readonly Message[
   useEffect(() => {
     if (!on) return;
     let current = true;
-    api<WireFeedPage>(feedPath(bot.id), { background: true })
-      .then((page) => {
+    ask(feedPath(bot.id), (page) => {
         if (!current) return;
         const before = feeds.get(bot.id);
         const merged = mergeFeedPage(before, page, "newest");
@@ -110,12 +189,12 @@ export function useSingleChatFeed(bot: Bot, on: boolean, live: readonly Message[
         hold(bot.id, { ...merged, olderRequest: keep?.olderRequest, olderBeforeAt: keep?.olderBeforeAt, olderFailed: keep?.olderFailed ?? false, newestFailed: false });
       })
       .catch(() => {
-        if (!current) return;
+        if (!current || forgotten !== generation) return;
         const before = feeds.get(bot.id);
         hold(bot.id, { entries: [], hasMore: false, olderFailed: false, ...before, newestFailed: true });
       });
     return () => { current = false; };
-  }, [on, bot.id, bot.threadId, elsewhere, revisions, reload]);
+  }, [on, bot.id, bot.threadId, elsewhere, revisions, reload, forgotten]);
 
   const loadOlder = useCallback(() => {
     const state = feeds.get(bot.id);
@@ -127,8 +206,7 @@ export function useSingleChatFeed(bot: Bot, on: boolean, live: readonly Message[
       const now = feeds.get(bot.id);
       return now?.olderRequest === request ? now : undefined;
     };
-    api<WireFeedPage>(`${feedPath(bot.id)}&threadId=${encodeURIComponent(oldest.threadId)}&before=${encodeURIComponent(oldest.message.id)}`, { background: true })
-      .then((page) => {
+    ask(`${feedPath(bot.id)}&threadId=${encodeURIComponent(oldest.threadId)}&before=${encodeURIComponent(oldest.message.id)}`, (page) => {
         const now = mine();
         if (!now) return;
         if (now.revision !== page.revision) {
