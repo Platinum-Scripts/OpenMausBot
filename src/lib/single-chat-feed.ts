@@ -37,12 +37,25 @@ export function feedRows({ fetched, live, threadIds, hasMore = false }: {
   const liveIds = new Set(live.all.map((message) => message.id));
   const byThread = new Map<string, Message[]>();
   for (const { threadId, message } of fetched) {
-    if (!threadIds.has(threadId) || (threadId === live.threadId && liveIds.has(message.id))) continue;
+    if (!threadIds.has(threadId)) continue;
     const messages = byThread.get(threadId);
     if (messages) messages.push(message);
     else byThread.set(threadId, [message]);
   }
-  if (threadIds.has(live.threadId)) byThread.set(live.threadId, [...byThread.get(live.threadId) ?? [], ...live.visible]);
+  if (threadIds.has(live.threadId)) {
+    const visibleIndex = new Map(live.visible.map((message, index) => [message.id, index]));
+    const messages: Message[] = [];
+    let nextLive = 0;
+    // Shared IDs anchor the live prefix in server order, including equal-time messages.
+    for (const message of byThread.get(live.threadId) ?? []) {
+      const index = visibleIndex.get(message.id);
+      if (index !== undefined) {
+        while (nextLive <= index) messages.push(live.visible[nextLive++]!);
+      } else if (!liveIds.has(message.id)) messages.push(message);
+    }
+    while (nextLive < live.visible.length) messages.push(live.visible[nextLive++]!);
+    byThread.set(live.threadId, messages);
+  }
   const rows = orderFeed([...byThread].map(([threadId, messages]) => ({ threadId, messages })))
     .map(({ threadId, message }) => ({ id: `${threadId}:${message.id}`, role: message.role, threadId, message }));
   if (!hasMore) return rows;

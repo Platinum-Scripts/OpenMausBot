@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { botOpensTo } from "@/state/thread-navigation";
+import { botOpensTo, openBot } from "@/state/thread-navigation";
+import { hasComposerDraft, restoreComposerDraft } from "./drafts";
 import type { Message } from "@/state/store";
 import { feedRows, feedSegments, mergeFeedPage, setSingleChatFeedMode } from "./single-chat-feed";
 
@@ -18,6 +19,22 @@ describe("feedRows", () => {
       threadIds: new Set(["main", "topic"]),
     });
     expect(keys(rows)).toEqual(["main:m1", "topic:t1", "main:m2", "main:m3"]);
+  });
+
+  it.each([
+    ["feed ahead", ["m1", "m2"], ["m1"], ["m1", "m2"]],
+    ["live ahead", ["m1", "m2"], ["m1", "m2", "m3"], ["m1", "m2", "m3"]],
+    ["live has older ties", ["m1", "m2"], ["m0", "m1"], ["m0", "m1", "m2"]],
+    ["fetched has older ties", ["m0", "m1"], ["m1", "m2"], ["m0", "m1", "m2"]],
+  ])("preserves equal-time thread order when %s", (_label, fetchedIds, liveIds, expected) => {
+    const live = liveIds.map(id => ({ ...said(id, 10), text: `live ${id}` }));
+    const rows = feedRows({
+      fetched: fetchedIds.map(id => entry("main", said(id, 10))),
+      live: { threadId: "main", all: live, visible: live },
+      threadIds: new Set(["main"]),
+    });
+    expect(keys(rows)).toEqual(expected.map(id => `main:${id}`));
+    for (const message of live) expect(rows.find(row => row.message.id === message.id)?.message).toBe(message);
   });
 
   it("drops a fetched message of the open conversation that is off its active branch", () => {
@@ -132,10 +149,25 @@ describe("opening a bot with the single chat feed on", () => {
     { threadId: "topic", createdAt: 2, updatedAt: 20 },
   ] };
 
-  it("opens its newest conversation, which is where the composer sends", () => {
+  it("leaves automatic composer targeting to the guarded live hook", () => {
     expect(botOpensTo(bot, false)).toBe("main");
     setSingleChatFeedMode(true);
-    expect(botOpensTo(bot, false)).toBe("topic");
-    expect(botOpensTo(bot, true)).toBe("topic");
+    expect(botOpensTo(bot, false)).toBe("main");
+    expect(botOpensTo(bot, true)).toBe("main");
+  });
+
+  it.each(["draft", "running turn"])("reopens the selected conversation without moving a %s", (reason) => {
+    const reopened = { ...bot, id: `reopen-${reason}`, busy: reason === "running turn" };
+    const draftId = `bot:${reopened.id}:main`;
+    if (reason === "draft") restoreComposerDraft(draftId, { text: "Unsent text", attachments: [] });
+    setSingleChatFeedMode(true);
+    try {
+      const actions: unknown[] = [];
+      openBot(action => actions.push(action), reopened, false);
+      expect(actions).toEqual([{ type: "select", id: reopened.id }]);
+      if (reason === "draft") expect(hasComposerDraft(draftId)).toBe(true);
+    } finally {
+      restoreComposerDraft(draftId, { text: "", attachments: [] });
+    }
   });
 });
