@@ -1,4 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { ChiefRetryJournal } from "./chief-retry-journal.ts";
+
+const journals: ChiefRetryJournal[] = [];
+afterEach(() => { for (const journal of journals.splice(0)) journal.close(); vi.restoreAllMocks(); });
 
 import { createChiefNotices, type ChiefNoticeDeps } from "./chief-notices.ts";
 
@@ -25,11 +29,17 @@ function fixture(extra: Partial<ChiefNoticeDeps> = {}) {
   };
   const timers: Array<{ run: () => void; delayMs: number }> = [];
   const startTurn = vi.fn(async (_botId: string, _text: string, _opts: { threadId: string }) => undefined);
+  const retryJournal = new ChiefRetryJournal(":memory:");
+  journals.push(retryJournal);
   const notices = createChiefNotices({
+    retryJournal,
     store: store as never, notify: () => {}, threadBusy: () => false, botAtThreadCapacity: () => false,
     groupTurnActive: () => false, startTurn, assignerOf: () => undefined, escalationsEnabled: () => true,
     retryPolicy: () => ({ max: 1, delayMinutes: 2 }),
-    schedule: (run, delayMs) => { timers.push({ run, delayMs }); },
+    schedule: (run, delayMs) => {
+      const dueAt = Date.now() + delayMs;
+      timers.push({ run: () => { vi.spyOn(Date, "now").mockReturnValue(dueAt); run(); }, delayMs });
+    },
     ...extra,
   });
   const fire = () => { for (const timer of timers.splice(0)) timer.run(); };
@@ -45,6 +55,7 @@ describe("OpenMausBot's own retry of a teammate's stopped thread", () => {
     expect(f.startTurn).not.toHaveBeenCalled();
     expect(f.timers.map((timer) => timer.delayMs)).toEqual([120_000]);
     f.fire();
+    await Promise.resolve();
     expect(f.calls()).toEqual([{ botId: "fox", threadId: "fox-sweep", text: expect.stringMatching(/^\[Auto-retry from OpenMausBot for Chief, your Chief of Staff, .*automatic retry 1 of 1/) }]);
     expect(f.startTurn.mock.calls[0]![2]).toMatchObject({ unattended: true, peerAsk: { botId: "chief", unattended: true } });
 
@@ -70,14 +81,14 @@ describe("OpenMausBot's own retry of a teammate's stopped thread", () => {
     expect(done.startTurn).not.toHaveBeenCalled();
   });
 
-  it("uses the same settling refusal for automatic and Chief-requested retries", () => {
+  it("keeps a settling retry pending instead of dispatching or losing it", () => {
     const f = fixture({ threadBusy: (botId) => botId === "fox", threadSettling: (threadId) => threadId === "fox-sweep" });
     f.fail();
     expect(f.notices.retryRefusal("fox", "fox-sweep")).toContain("still shutting down");
     f.fire();
     expect(f.calls().filter((call) => call.botId === "fox")).toEqual([]);
-    expect(f.calls().filter((call) => call.botId === "chief")).toHaveLength(1);
-    expect(f.calls()[0]!.text).toContain("still shutting down");
+    expect(f.calls().filter((call) => call.botId === "chief")).toHaveLength(0);
+    expect(f.timers.map(timer => timer.delayMs)).toEqual([5_000]);
   });
 
   it("rechecks privacy and retry opt-in when the timer fires", () => {
@@ -94,6 +105,14 @@ describe("OpenMausBot's own retry of a teammate's stopped thread", () => {
     enabled = false;
     disabled.fire();
     expect(disabled.calls().map((call) => call.botId)).toEqual(["chief"]);
+
+    let person = "owner-one";
+    const rerouted = fixture({ routing: { askedPerson: () => person, personOf: () => person,
+      startedBy: () => person, open: () => {} } });
+    rerouted.fail();
+    person = "owner-two";
+    rerouted.fire();
+    expect(rerouted.startTurn).not.toHaveBeenCalled();
   });
 
   it("does not retry a private thread through another person's Chief", () => {
@@ -109,6 +128,13 @@ describe("OpenMausBot's own retry of a teammate's stopped thread", () => {
     f.path.push({ role: "user", at: Date.now() + 1 });
     f.fire();
     expect(f.startTurn).not.toHaveBeenCalled();
+
+    const stopped = fixture();
+    stopped.path.push({ id: "request", role: "user", kind: "text", at: Date.now() } as never);
+    stopped.fail();
+    Object.assign(stopped.path[0]!, { requestCancelled: true });
+    stopped.fire();
+    expect(stopped.startTurn).not.toHaveBeenCalled();
   });
 
   it("tells the Chief when its own retry cannot start", async () => {
@@ -117,7 +143,7 @@ describe("OpenMausBot's own retry of a teammate's stopped thread", () => {
     f.fail();
     f.fire();
     await vi.waitFor(() => expect(f.calls().map((call) => call.botId)).toEqual(["fox", "chief"]));
-    expect(f.calls()[1]!.text).toContain("OpenMausBot's automatic retry could not start: the bot is at its thread limit.");
+    expect(f.calls()[1]!.text).toContain("OpenMausBot's automatic retry could not confirm its start; the reserved attempt remains used.");
   });
 
   it("is off when the host does not turn it on, as before: the Chief hears at once", () => {

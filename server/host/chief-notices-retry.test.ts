@@ -1,7 +1,16 @@
-import { describe, expect, it, vi } from "vitest";
+import { ChiefRetryJournal } from "./chief-retry-journal.ts";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { RETRY_BLOCKED } from "../incidents.ts";
 import { createChiefNotices, type ChiefNoticeDeps } from "./chief-notices.ts";
+
+const journals: ChiefRetryJournal[] = [];
+afterEach(() => { for (const journal of journals.splice(0)) journal.close(); });
+function retryJournal() {
+  const journal = new ChiefRetryJournal(":memory:");
+  journals.push(journal);
+  return journal;
+}
 
 function fixture(over: Partial<ChiefNoticeDeps> = {}) {
   const bots = [
@@ -30,6 +39,7 @@ function fixture(over: Partial<ChiefNoticeDeps> = {}) {
   };
   const startTurn = vi.fn(async (_botId: string, _text: string, _opts: { threadId: string }) => undefined);
   const notices = createChiefNotices({
+    retryJournal: retryJournal(),
     store: store as never, notify: () => {}, threadBusy: () => false, botAtThreadCapacity: () => false,
     groupTurnActive: () => false, startTurn, assignerOf: () => undefined, escalationsEnabled: () => true, ...over,
   });

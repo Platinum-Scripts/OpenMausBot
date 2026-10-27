@@ -1,6 +1,15 @@
-import { describe, expect, it, vi } from "vitest";
+import { ChiefRetryJournal } from "./chief-retry-journal.ts";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createChiefNotices } from "./chief-notices.ts";
+
+const journals: ChiefRetryJournal[] = [];
+afterEach(() => { for (const journal of journals.splice(0)) journal.close(); });
+function retryJournal() {
+  const journal = new ChiefRetryJournal(":memory:");
+  journals.push(journal);
+  return journal;
+}
 
 const BOB = "p_bobbobbobbobbobbobbobb", OLIVE = "p_oliveoliveoliveoliveo";
 
@@ -23,11 +32,12 @@ function fixture() {
       return task;
     },
     appendMessage: (threadId: string, row: unknown) => { lines.push({ threadId, row }); },
-    messagesFor: () => [],
+    messagesFor: () => [], activePath: () => [],
   };
   const notified: unknown[] = [];
   const startTurn = vi.fn(async (_botId: string, _text: string, _opts: { threadId: string }) => undefined);
   const notices = createChiefNotices({
+    retryJournal: retryJournal(),
     store: store as never, notify: (notification) => { notified.push(notification); }, threadBusy: () => false, botAtThreadCapacity: () => false,
     groupTurnActive: () => false, startTurn, assignerOf: () => undefined, escalationsEnabled: () => true,
     routing: {

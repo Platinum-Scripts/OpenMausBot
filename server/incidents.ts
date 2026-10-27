@@ -138,6 +138,7 @@ export function incidentChip(incident: Incident): string {
  * and why its last automatic retry could not start. */
 export interface IncidentRetries {
   autoRetried?: number;
+  reserved?: number;
   refused?: string;
 }
 
@@ -153,6 +154,7 @@ export function incidentText(incident: Incident, count: IncidentCount, retries: 
   if (retries.autoRetried) {
     lines.push(`OpenMausBot already resumed that thread by itself ${retries.autoRetried === 1 ? "once" : `${retries.autoRetried} times`}, and it stopped again.`);
   }
+  if (retries.reserved) lines.push(`${retries.reserved} automatic retry ${retries.reserved === 1 ? "attempt was" : "attempts were"} reserved without a confirmed start; those attempts remain used.`);
   if (retries.refused) lines.push(`${retries.refused}.`);
   lines.push(count.mayRetry
     ? [

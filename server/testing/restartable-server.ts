@@ -27,7 +27,7 @@ export interface RestartableServer {
   close(): Promise<void>;
 }
 
-export async function launchRestartableServer(options: { scripted?: boolean; dataDirRoot?: string } = {}): Promise<RestartableServer> {
+export async function launchRestartableServer(options: { scripted?: boolean; dataDirRoot?: string; imports?: string[] } = {}): Promise<RestartableServer> {
   const port = await freePortBlock([0, 1]);
   // Native browser daemons use UNIX sockets, and a macOS temp home can exceed their path limit.
   const dataDir = mkdtempSync(join(options.dataDirRoot ?? tmpdir(), "omb-restartable-"));
@@ -48,7 +48,7 @@ export async function launchRestartableServer(options: { scripted?: boolean; dat
   const start = async () => {
     const env = verificationServerEnvironment(process.env, dataDir, port);
     const log = openSync(logPath, "a", 0o600);
-    child = spawn(process.execPath, verificationServerArgs(env), { cwd: ROOT, env, stdio: ["ignore", log, log] });
+    child = spawn(process.execPath, [...(options.imports ?? []).flatMap(path => ["--import", path]), ...verificationServerArgs(env)], { cwd: ROOT, env, stdio: ["ignore", log, log] });
     closeSync(log);
     const deadline = Date.now() + 30_000;
     for (;;) {
