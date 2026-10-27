@@ -37,6 +37,21 @@ describe("feedRows", () => {
     expect(keys(feedRows({ ...partial, fetched: [], hasMore: true }))).toEqual(["main:m0", "main:m1", "main:m2"]);
   });
 
+  it("renders a large retained topic without mutating its messages", () => {
+    const fetched = Array.from({ length: 20_000 }, (_, i) => entry("topic", said(String(i), i)));
+    const durations: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      const start = performance.now();
+      const rows = feedRows({ fetched, live: { threadId: "main", all: [], visible: [] }, threadIds: new Set(["topic", "main"]) });
+      durations.push(performance.now() - start);
+      expect(rows).toHaveLength(20_000);
+      expect(rows[0]?.id).toBe("topic:0");
+      expect(rows.at(-1)?.id).toBe("topic:19999");
+    }
+    expect(fetched).toHaveLength(20_000);
+    console.log(`client feedRows 20k retained messages median ${durations.sort((a, b) => a - b)[1]!.toFixed(2)} ms`);
+  });
+
   it("leaves out a conversation that is no longer in the feed", () => {
     const rows = feedRows({
       fetched: [entry("gone", said("g1", 1)), entry("main", said("m1", 2))],
@@ -82,6 +97,15 @@ describe("mergeFeedPage", () => {
   it("drops a held line in the newest page's span that the page no longer has (edited away)", () => {
     const merged = mergeFeedPage({ entries: [...held, entry("b", said("b1", 3))], hasMore: true }, { items: [entry("a", said("a2", 2)), entry("b", said("b2", 4))], hasMore: true }, "newest");
     expect(merged.entries.map((e) => e.message.id)).toEqual(["a1", "a2", "b2"]);
+  });
+
+  it("refetches an ambiguous boundary timestamp instead of retaining deleted tied messages", () => {
+    const old = [entry("a", said("earlier-tie", 10)), entry("b", said("keep", 10)), entry("c", said("deleted", 10)), entry("c", said("latest", 20))];
+    const newest = [entry("b", said("keep", 10)), entry("c", said("new", 11)), entry("c", said("latest", 20))];
+    const merged = mergeFeedPage({ entries: old, hasMore: false }, { items: newest, hasMore: true }, "newest");
+    expect(merged).toEqual({ entries: newest, hasMore: true });
+    const older = mergeFeedPage(merged, { items: [entry("a", said("earlier-tie", 10))], hasMore: false }, "older");
+    expect(older.entries.map(e => e.message.id)).toEqual(["earlier-tie", "keep", "new", "latest"]);
   });
 
   it("takes a complete newest page as the whole history", () => {

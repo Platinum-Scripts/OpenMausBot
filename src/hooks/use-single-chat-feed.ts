@@ -57,7 +57,11 @@ export function heldSingleChatFeeds(): string[] {
 
 function oldestHeld(entries: readonly FeedEntry<Message>[]): FeedEntry<Message> | undefined {
   const byThread = new Map<string, Message[]>();
-  for (const { threadId, message } of entries) byThread.set(threadId, [...byThread.get(threadId) ?? [], message]);
+  for (const { threadId, message } of entries) {
+    const messages = byThread.get(threadId);
+    if (messages) messages.push(message);
+    else byThread.set(threadId, [message]);
+  }
   return orderFeed([...byThread].map(([threadId, messages]) => ({ threadId, messages })))[0];
 }
 

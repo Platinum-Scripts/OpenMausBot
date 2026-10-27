@@ -136,7 +136,9 @@ describe("useSingleChatFeed", () => {
     expect(seen?.pending).toBe(false);
   });
 
-  it.each(["older first", "newest first"])("keeps overlapping refreshed history authoritative when %s", async (order) => {
+  it.each([
+    ["older first", 15], ["newest first", 15], ["older first", 10], ["newest first", 10],
+  ] as const)("keeps overlapping refreshed history authoritative when %s, deleted at %s", async (order, deletedAt) => {
     fixture.api.mockResolvedValueOnce(page([["topic", said("t1", 20)]], true));
     await show(base);
     const older = deferred<ReturnType<typeof page>>(), newest = deferred<ReturnType<typeof page>>();
@@ -145,7 +147,7 @@ describe("useSingleChatFeed", () => {
     fixture.api.mockReturnValueOnce(newest.promise);
     await show({ ...base, tasks: [base.tasks![0]!, { ...base.tasks![1]!, updatedAt: 50 }] });
     const settle = [
-      () => older.resolve(page([["topic", said("gone", 15)]], true)),
+      () => older.resolve(page([["topic", said("gone", deletedAt)]], true)),
       () => newest.resolve(page([["topic", said("fresh", 10)], ["topic", said("t1", 20)]], true)),
     ];
     for (const step of order === "older first" ? settle : [...settle].reverse()) await act(async () => { step(); });
