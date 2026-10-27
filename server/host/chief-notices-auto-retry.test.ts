@@ -70,6 +70,21 @@ describe("OpenMausBot's own retry of a teammate's stopped thread", () => {
     expect(done.startTurn).not.toHaveBeenCalled();
   });
 
+  it("uses the same settling refusal for automatic and Chief-requested retries", () => {
+    const f = fixture({ threadBusy: () => true, threadSettling: () => true });
+    f.fail();
+    expect(f.notices.retryRefusal("fox", "fox-sweep")).toContain("still shutting down");
+    f.fire();
+    expect(f.startTurn).not.toHaveBeenCalled();
+  });
+
+  it("does not retry a private thread through another person's Chief", () => {
+    const f = fixture({ privateThread: () => true });
+    f.fail();
+    expect(f.timers).toEqual([]);
+    expect(f.startTurn).not.toHaveBeenCalled();
+  });
+
   it("leaves the thread alone when the person wrote there after it stopped", () => {
     const f = fixture();
     f.fail();
