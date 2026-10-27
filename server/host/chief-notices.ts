@@ -102,12 +102,22 @@ export function createChiefNotices(deps: ChiefNoticeDeps) {
   /** Resumes the thread once its delay is up, through the same start a Chief's retry_thread takes, unless the thread
    * moved on meanwhile: someone wrote there, it runs or waits in the queue, or it finished a run. A start that is
    * refused goes to the Chief as the incident it would have been. */
-  function retryLater(chief: BotRecord, bot: BotRecord, threadId: string, attempt: number, max: number, delayMs: number, report: (why: string) => void) {
+  function retryLater(chief: BotRecord, bot: BotRecord, threadId: string, attempt: number, max: number, delayMs: number, report: (why?: string) => void) {
     const failedAt = Date.now();
     schedule(() => {
-      if (!store.bot(bot.id) || !store.taskByThread(bot.id, threadId)) return;
+      const currentBot = store.bot(bot.id);
+      if (!currentBot || !store.taskByThread(bot.id, threadId)) return;
+      const currentChief = chiefForBot(store.bots, currentBot);
+      if (!currentChief || currentChief.id !== chief.id || !reachesChief(currentChief, currentBot, threadId)
+        || deps.quietThread?.(bot.id, threadId) || deps.assignerOf(threadId) || store.groupByThread(threadId)) return;
+      const policy = autoRetry();
+      if (!policy || attempt > policy.max) { report(); return; }
       if (store.activePath(threadId).some((line) => line.role === "user" && line.at > failedAt)) return;
-      if (retryRefusal(bot.id, threadId)) return;
+      const refused = retryRefusal(bot.id, threadId);
+      if (refused) {
+        if (deps.threadSettling?.(threadId)) report(refused);
+        return;
+      }
       const text = `[Auto-retry from OpenMausBot for ${peerName(chief.name)}, your Chief of Staff, after this thread's last run stopped ` +
         `(automatic retry ${attempt} of ${max}). Continue the request above from where it stopped and finish it. ` +
         "If the same problem comes back, say exactly what is blocking and stop.]";

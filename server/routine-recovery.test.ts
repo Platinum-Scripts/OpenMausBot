@@ -469,6 +469,18 @@ describe("a run that reaches its run limit", () => {
     expect(h.run(run.id)).toMatchObject({ status: "failed", error: `${LIMIT}. Not retried: its last 3 runs failed too` });
   });
 
+  it("keeps an empty routine opt-in through reload and retries a timeout without workspace defaults", async () => {
+    const h = interrupting({ retryPolicy: () => undefined });
+    const routine = limited(h, {});
+    expect(routine.retryOnFailure).toEqual({});
+    expect(h.restart().listRoutines().find((candidate) => candidate.id === routine.id)?.retryOnFailure).toEqual({});
+    const run = await h.start(routine.id);
+    await h.advance(10 * MINUTE);
+    expect(h.run(run.id)).toMatchObject({ status: "queued", retried: "timeout", retries: 1 });
+    await h.advance(2 * MINUTE);
+    expect(h.run(run.id)).toMatchObject({ status: "running", threadId: run.threadId, retries: 1 });
+  });
+
   it("checks a routine's own retry fields, and keeps them across a restart", async () => {
     const h = interrupting();
     expect(() => limited(h, { max: 3 })).toThrow(/0 to 2/);

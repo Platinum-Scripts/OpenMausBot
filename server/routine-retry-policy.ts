@@ -38,7 +38,7 @@ export function retryPolicyFields(value: unknown, strict = false): Partial<Routi
     if (TIMEOUT_RETRIES.has(raw.onTimeout as RoutineTimeoutRetry)) fields.onTimeout = raw.onTimeout as RoutineTimeoutRetry;
     else if (strict) throw new Error("retryOnFailure.onTimeout is resume, rerun or off");
   }
-  return Object.keys(fields).length ? fields : undefined;
+  return Object.keys(fields).length || Object.keys(raw).length === 0 ? fields : undefined;
 }
 
 const isObject = (value: unknown) => typeof value === "object" && value !== null && !Array.isArray(value);
