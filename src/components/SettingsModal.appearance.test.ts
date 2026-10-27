@@ -175,7 +175,7 @@ describe("Settings → Appearance", () => {
     fixture.api.mockResolvedValue(saved);
     const html = render();
     expect(html).toContain('aria-label="Single chat feed"');
-    expect(html).toContain("Show every topic in one continuous history per bot");
+    expect(html).not.toContain("Show every topic in one continuous history per bot");
     const toggle = fixture.switches.find((props) => props["aria-label"] === "Single chat feed")!;
     expect(toggle.checked).toBe(false);
     toggle.onClick!({} as never);

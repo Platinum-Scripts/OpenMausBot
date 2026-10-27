@@ -32,7 +32,6 @@ export function SingleChatFeedRow() {
   return (
     <SettingRow
       title={t("settings.singleChatFeed.title")}
-      subtitle={t("settings.singleChatFeed.subtitle")}
       message={error ? <p role="alert" className="text-danger">{error}</p> : null}
     >
       <Switch

@@ -136,6 +136,26 @@ describe("useSingleChatFeed", () => {
     expect(seen?.pending).toBe(false);
   });
 
+  it.each(["older first", "newest first"])("keeps overlapping refreshed history authoritative when %s", async (order) => {
+    fixture.api.mockResolvedValueOnce(page([["topic", said("t1", 20)]], true));
+    await show(base);
+    const older = deferred<ReturnType<typeof page>>(), newest = deferred<ReturnType<typeof page>>();
+    fixture.api.mockReturnValueOnce(older.promise);
+    await act(async () => { seen!.loadOlder(); });
+    fixture.api.mockReturnValueOnce(newest.promise);
+    await show({ ...base, tasks: [base.tasks![0]!, { ...base.tasks![1]!, updatedAt: 50 }] });
+    const settle = [
+      () => older.resolve(page([["topic", said("gone", 15)]], true)),
+      () => newest.resolve(page([["topic", said("fresh", 10)], ["topic", said("t1", 20)]], true)),
+    ];
+    for (const step of order === "older first" ? settle : [...settle].reverse()) await act(async () => { step(); });
+    expect(ids()).toEqual(["topic:fresh", "topic:t1", "main:m2"]);
+    expect(seen?.pending).toBe(false);
+    fixture.api.mockResolvedValueOnce(page([["topic", said("first", 5)]]));
+    await act(async () => { seen!.loadOlder(); });
+    expect(feedCalls().at(-1)).toContain("before=fresh");
+  });
+
   it("retries a failed older page from the same place", async () => {
     fixture.api.mockResolvedValueOnce(page([["topic", said("t1", 20)]], true));
     await show(base);
@@ -325,6 +345,38 @@ describe("useSingleChatFeedTarget", () => {
   it("goes by the messages it holds when a topic's activity stamp lags them", async () => {
     await act(async () => { root.render(createElement(Target, { bot: base, newestAts: new Map([["main", 30], ["topic", 50]]) })); });
     expect(dispatch).toHaveBeenCalledExactlyOnceWith({ type: "switchTask", botId: "bot", threadId: "topic" });
+  });
+
+  it("retries a failed switch with backoff and settles only on the destination snapshot", () => {
+    vi.useFakeTimers();
+    try {
+      show(newerTopic);
+      show({ ...newerTopic, switchingTo: "topic" });
+      show(newerTopic);
+      expect(dispatch).toHaveBeenCalledTimes(1);
+      act(() => { vi.advanceTimersByTime(1000); });
+      expect(dispatch).toHaveBeenCalledTimes(2);
+      show({ ...newerTopic, threadId: "topic", awaitingThreadSnapshot: true });
+      show({ ...newerTopic, threadId: "topic", awaitingThreadSnapshot: false });
+      show(newerTopic);
+      act(() => { vi.advanceTimersByTime(30_000); });
+      expect(dispatch).toHaveBeenCalledTimes(2);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("cancels a failed switch retry while a draft is being written", async () => {
+    vi.useFakeTimers();
+    try {
+      show(newerTopic);
+      show({ ...newerTopic, switchingTo: "topic" });
+      show(newerTopic);
+      await act(async () => { restoreComposerDraft("bot:bot:main", { text: "draft", attachments: [] }); });
+      act(() => { vi.advanceTimersByTime(30_000); });
+      expect(dispatch).toHaveBeenCalledTimes(1);
+      await act(async () => { restoreComposerDraft("bot:bot:main", { text: "", attachments: [] }); });
+      act(() => { vi.advanceTimersByTime(1000); });
+      expect(dispatch).toHaveBeenCalledTimes(2);
+    } finally { vi.useRealTimers(); }
   });
 
   it("leaves a topic the person picked until a newer message lands elsewhere", () => {

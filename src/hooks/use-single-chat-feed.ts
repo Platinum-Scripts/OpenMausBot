@@ -8,7 +8,7 @@ import { api, ApiError, MESSAGE_PAGE_SIZE, type Action, type Bot, type Message }
 
 /** Each direction loads and fails on its own. `olderRequest`: the older page in flight; a reply to any other request
  * (asked before the hold restarted or was dropped) is ignored. */
-type Held = HeldFeed & { olderRequest?: number; newestFailed: boolean; olderFailed: boolean };
+type Held = HeldFeed & { olderRequest?: number; olderBeforeAt?: number; newestFailed: boolean; olderFailed: boolean };
 
 /** The feeds of the bots opened most recently; a bot opened again after dropping out reloads its newest page. */
 const HELD_BOTS = 20;
@@ -100,9 +100,9 @@ export function useSingleChatFeed(bot: Bot, on: boolean, live: readonly Message[
         if (!current) return;
         const before = feeds.get(bot.id);
         const merged = mergeFeedPage(before, page, "newest");
-        // A replaced hold has a new oldest line (or none to page from), so an older page asked for before no longer fits.
-        const keep = before && !replacesHold(before, page) ? before : undefined;
-        hold(bot.id, { ...merged, olderRequest: keep?.olderRequest, olderFailed: keep?.olderFailed ?? false, newestFailed: false });
+        const overlapsPending = before?.olderBeforeAt !== undefined && (page.items[0]?.message.at ?? Infinity) <= before.olderBeforeAt;
+        const keep = before && !replacesHold(before, page) && !overlapsPending ? before : undefined;
+        hold(bot.id, { ...merged, olderRequest: keep?.olderRequest, olderBeforeAt: keep?.olderBeforeAt, olderFailed: keep?.olderFailed ?? false, newestFailed: false });
       })
       .catch(() => {
         if (!current) return;
@@ -117,7 +117,7 @@ export function useSingleChatFeed(bot: Bot, on: boolean, live: readonly Message[
     const oldest = state && state.olderRequest === undefined && state.hasMore ? oldestHeld(state.entries) : undefined;
     if (!state || !oldest) return;
     const request = ++requests;
-    hold(bot.id, { ...state, olderRequest: request, olderFailed: false });
+    hold(bot.id, { ...state, olderRequest: request, olderBeforeAt: oldest.message.at, olderFailed: false });
     const mine = () => {
       const now = feeds.get(bot.id);
       return now?.olderRequest === request ? now : undefined;
@@ -125,7 +125,7 @@ export function useSingleChatFeed(bot: Bot, on: boolean, live: readonly Message[
     api<WireFeedPage>(`${feedPath(bot.id)}&threadId=${encodeURIComponent(oldest.threadId)}&before=${encodeURIComponent(oldest.message.id)}`, { background: true })
       .then((page) => {
         const now = mine();
-        if (now) hold(bot.id, { ...now, ...mergeFeedPage(now, page, "older"), olderRequest: undefined });
+        if (now) hold(bot.id, { ...now, ...mergeFeedPage(now, page, "older"), olderRequest: undefined, olderBeforeAt: undefined });
       })
       .catch((error: unknown) => {
         const now = mine();
@@ -136,7 +136,7 @@ export function useSingleChatFeed(bot: Bot, on: boolean, live: readonly Message[
           setReload((n) => n + 1);
           return;
         }
-        hold(bot.id, { ...now, olderRequest: undefined, olderFailed: true });
+        hold(bot.id, { ...now, olderRequest: undefined, olderBeforeAt: undefined, olderFailed: true });
       });
   }, [bot.id]);
 
@@ -174,22 +174,32 @@ export function useSingleChatFeedTarget(
   const targetTask = target ? bot.tasks?.find((task) => task.threadId === target) : undefined;
   const targetAt = Math.max(targetTask?.updatedAt ?? targetTask?.createdAt ?? 0, (target && newestAts?.get(target)) || 0);
   const settled = useRef<string | null>(null);
+  const attempted = useRef<{ key: string; from: string; count: number } | null>(null);
   const lastMessageId = bot.messages.at(-1)?.id;
   const drafting = useHasComposerDraft(`bot:${bot.id}:${bot.threadId}`);
   useEffect(() => {
     if (!target) {
       settled.current = null;
+      attempted.current = null;
       return;
     }
     const key = `${bot.id}:${target}@${targetAt}`;
     if (settled.current === key) return;
-    if (target === bot.threadId) {
+    if (bot.switchingTo || bot.awaitingThreadSnapshot) return;
+    const previous = attempted.current?.key === key ? attempted.current : null;
+    if (target === bot.threadId || (previous && previous.from !== bot.threadId)) {
       settled.current = key;
+      attempted.current = null;
       return;
     }
-    if (bot.switchingTo || bot.awaitingThreadSnapshot || busy || drafting) return;
-    settled.current = key;
-    dispatch({ type: "switchTask", botId: bot.id, threadId: target });
+    if (busy || drafting) return;
+    const move = () => {
+      attempted.current = { key, from: bot.threadId, count: (previous?.count ?? 0) + 1 };
+      dispatch({ type: "switchTask", botId: bot.id, threadId: target });
+    };
+    if (!previous) { move(); return; }
+    const timer = setTimeout(move, Math.min(30_000, 1000 * 2 ** Math.min(previous.count - 1, 5)));
+    return () => clearTimeout(timer);
   }, [target, targetAt, bot.id, bot.threadId, bot.switchingTo, bot.awaitingThreadSnapshot, busy, drafting, lastMessageId, dispatch]);
 }
 
