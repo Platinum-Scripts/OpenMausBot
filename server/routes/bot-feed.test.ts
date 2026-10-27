@@ -131,6 +131,26 @@ describe("GET /api/bots/:id/feed", () => {
     expect((await get(base, path)).body.revision).toBe(after.revision);
   });
 
+  it.each([20, 110, 5000])("versions an append at %s below the feed high-water mark, respecting ties", async (at) => {
+    const { store, bot, main, topic } = fixture();
+    store.importTranscript(topic, [
+      { id: "high", at: 100, parentId: null, role: "user", kind: "text", text: "high" },
+      { id: "low", at: 10, parentId: "high", role: "user", kind: "text", text: "low" },
+    ], "low", []);
+    const base = await serve(store);
+    const path = `/api/bots/${bot.id}/feed?limit=1`;
+    const before = (await get(base, path)).body;
+    const fullBefore = (await get(base, `/api/bots/${bot.id}/feed?limit=50`)).body;
+    expect(fullBefore.hasMore).toBe(false);
+    store.appendMessage(topic, { role: "user", kind: "text", text: "inserted older", at });
+    const after = (await get(base, path)).body;
+    if (at < 5000) expect(after.items).toEqual(before.items);
+    expect(after.hasMore).toBe(true);
+    if (at < 5000 || topic < main) expect(after.revision).not.toBe(before.revision);
+    else expect(after.revision).toBe(before.revision);
+    expect((await get(base, `/api/bots/${bot.id}/feed?limit=50`)).body.items.some((item: any) => item.message.text === "inserted older")).toBe(true);
+  });
+
   it.each(["move", "reparent", "insert", "import", "backdate", "fork append"])("versions %s changes outside the newest page", async (change) => {
     const { store, bot, topic } = fixture();
     const first = store.activePath(topic)[0]!;

@@ -325,6 +325,7 @@ export class Store {
   /** Single chat feed validity. Kept in memory: a restart issues a new epoch, so no client keeps history held across it. */
   private readonly historyEpoch = newId();
   private historyRevisions = new Map<string, string>();
+  private historyHighWater = new Map<string, number>();
   private historyBots = new Set<string>();
 
   constructor(
@@ -940,6 +941,7 @@ export class Store {
   private deleteThreadRecord(threadId: string, dbAlreadyDeleted = false) {
     this.threads.delete(threadId);
     this.historyRevisions.delete(threadId);
+    this.historyHighWater.delete(threadId);
     if (!dbAlreadyDeleted) mdb.deleteThread(threadId);
     for (const file of [
       messagesFile(threadId),
@@ -1169,6 +1171,7 @@ export class Store {
   /** Call after the rewrite is stored: a feed read in between then holds new history under the old revision, which the
    * bump invalidates, never old history under the new one. One bot broadcast per bot per tick, however many rows change. */
   private invalidateThreadHistory(threadId: string): void {
+    this.historyHighWater.delete(threadId);
     this.historyRevisions.set(threadId, newId());
     const botId = this.botByThread(threadId)?.id;
     if (!botId || this.historyBots.has(botId)) return;
@@ -1217,17 +1220,36 @@ export class Store {
     return null;
   }
 
+  /** Active paths need not be chronological. Cache their maxima until a structural write invalidates them. */
+  private threadHistoryHighWater(threadId: string): number {
+    let at = this.historyHighWater.get(threadId);
+    if (at === undefined) {
+      at = this.activePath(threadId).reduce((max, message) => Math.max(max, message.at), Number.NEGATIVE_INFINITY);
+      this.historyHighWater.set(threadId, at);
+    }
+    return at;
+  }
+
   appendMessage(threadId: string, message: Omit<Message, "id" | "at"> & { at?: number }, command?: Command): Message {
     const t = this.thread(threadId);
     const full: Message = { id: newId(), at: Date.now(), parentId: t.activeLeafId, ...redactBotAuthored(message) };
     const persist = () => { mdb.appendMessage(threadId, full); return full; };
     const committed = command ? runCommand(command, persist) : persist();
     if (committed.id !== full.id) return committed;
-    // A fork or a line older than the leaf lands inside held history rather than after it.
-    const leaf = t.activeLeafId === null ? undefined : t.messages.findLast((candidate) => candidate.id === t.activeLeafId);
-    if (full.parentId !== t.activeLeafId || (leaf && full.at < leaf.at)) this.invalidateThreadHistory(threadId);
+    // A line newer than this topic can still land below another topic's newest page. Equal times use the feed's
+    // thread-id tie-break; appending at the same time within one thread is safe. Warm appends do not traverse history.
+    const ownHigh = this.threadHistoryHighWater(threadId);
+    const bot = this.botByThread(threadId);
+    let backdated = full.at < ownHigh;
+    for (const task of bot?.tasks ?? []) {
+      const high = this.threadHistoryHighWater(task.threadId);
+      if (full.at < high || (full.at === high && threadId < task.threadId)) backdated = true;
+    }
+    const fork = full.parentId !== t.activeLeafId;
     t.messages.push(full);
     t.activeLeafId = full.id;
+    if (fork || backdated) this.invalidateThreadHistory(threadId);
+    if (!fork) this.historyHighWater.set(threadId, Math.max(ownHigh, full.at));
     if (full.kind === "screen") {
       for (const pruned of this.pruneScreenFrames(t)) {
         mdb.updateMessage(threadId, pruned);
