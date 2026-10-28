@@ -15,15 +15,18 @@ execution. The short temporary path avoids UNIX socket path limits. Each journey
 prints a retained server log and `.chief-retries.json` evidence file containing
 API mutations, source transcripts, delivered notices, journal state and health timings.
 
-Three journeys cover:
+Four journeys cover:
 
 1. A failed request, one automatic retry, another failure more than an hour later,
    and a fresh user request. The first request receives exactly one retry; the new
    request gets its own budget. Notice text retains the confirmed retry count.
-2. Restart with a delayed retry pending, then restart with its failure notice
+2. A configured two-retry budget. Both automatic attempts run with their ordinal
+   labels before the final failure reaches the Chief, and the journal records two
+   reserved and confirmed starts.
+3. Restart with a delayed retry pending, then restart with its failure notice
    waiting for Chief capacity. Each dispatch happens once. A further restart
    duplicates neither the retry nor its notice.
-3. Restart after retry opt-out, routing change, and user progress. A simulated
+4. Restart after retry opt-out, routing change, and user progress. A simulated
    persisted dispatch claim is reported as uncertain, never replayed or described
    as a confirmed start. Corrupt journal state prevents further automatic work.
 

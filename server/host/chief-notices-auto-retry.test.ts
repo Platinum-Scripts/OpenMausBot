@@ -68,6 +68,28 @@ describe("OpenMausBot's own retry of a teammate's stopped thread", () => {
     expect(f.calls()[1]!.text).toContain("OpenMausBot already resumed that thread by itself once, and it stopped again.");
   });
 
+  it("uses a configured two-retry budget and labels each automatic attempt", async () => {
+    const f = fixture({ retryPolicy: () => ({ max: 2, delayMinutes: 0 }) });
+    f.fail();
+    f.fire();
+    await new Promise((resolve) => setImmediate(resolve));
+    f.path.push({ id: "retry-1", role: "user", kind: "text", at: Date.now(), text: f.calls()[0]!.text,
+      peerAsk: { unattended: true } } as never);
+    f.fail();
+    f.fire();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(f.calls().map((call) => call.botId)).toEqual(["fox", "fox"]);
+    expect(f.calls()[0]!.text).toContain("retry 1 of 2");
+    expect(f.calls()[1]!.text).toContain("retry 2 of 2");
+
+    f.path.push({ id: "retry-2", role: "user", kind: "text", at: Date.now(), text: f.calls()[1]!.text,
+      peerAsk: { unattended: true } } as never);
+    f.fail();
+    expect(f.timers).toEqual([]);
+    expect(f.calls().map((call) => call.botId)).toEqual(["fox", "fox", "chief"]);
+    expect(f.calls()[2]!.text).toContain("OpenMausBot already resumed that thread by itself 2 times, and it stopped again.");
+  });
+
   it("leaves the thread alone when it is busy, queued or finished meanwhile", () => {
     for (const extra of [{ threadBusy: () => true }, { threadQueued: () => true }] satisfies Partial<ChiefNoticeDeps>[]) {
       const f = fixture(extra);

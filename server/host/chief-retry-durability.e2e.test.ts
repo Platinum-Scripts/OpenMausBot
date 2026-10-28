@@ -8,7 +8,7 @@ import { AUTO_RETRY_LEAD } from "../incidents.ts";
 import { launchRestartableServer } from "../testing/restartable-server.ts";
 import type { ChiefRetryState } from "./chief-retry-journal.ts";
 
-async function fixture(delayMinutes = 0) {
+async function fixture(delayMinutes = 0, max = 1) {
   const server = await launchRestartableServer({ scripted: true,
     imports: [fileURLToPath(new URL("../testing/chief-retry-clock-hooks.mjs", import.meta.url))] });
   const plans: Record<string, unknown> = {};
@@ -32,7 +32,7 @@ async function fixture(delayMinutes = 0) {
   };
   const clock = (offset: number) => writeFileSync(join(server.dataDir, "chief-clock"), String(offset));
   await server.stop();
-  config({ retryOnFailure: { max: 1, delayMinutes }, threads: { maxConcurrentPerBot: 1 } });
+  config({ retryOnFailure: { max, delayMinutes }, threads: { maxConcurrentPerBot: 1 } });
   if (process.env.PCC83_BASELINE === "1") {
     writeFileSync(join(server.dataDir, "chief-baseline.ts"), execFileSync("git", ["show", "b299693a6:server/host/chief-notices.ts"], { encoding: "utf8" }));
   }
@@ -108,6 +108,27 @@ it("bounds retries beyond the notice hour and opens a fresh budget only for a ne
     await expect.poll(async () => (await f.reports()).length, { timeout: 20_000 }).toBe(2);
     expect(await f.retries(fox)).toHaveLength(2);
     expect(f.state(fox)).toMatchObject({ attempts: 1, started: 1 });
+    await f.health();
+  } finally { await f.close(); }
+}, 120_000);
+
+it("honors a two-retry thread budget before reporting the final stop", async () => {
+  const f = await fixture(0, 2);
+  try {
+    const fox = await f.bot("Two-retry budget fixture");
+    f.plan(fox.id, { script: [
+      { key: "request", match: ["Finish this request"], failWith: "Synthetic task failure" },
+      { key: "retry", match: ["OpenMausBot"], repeat: true, failWith: "Synthetic retry failure" },
+    ] });
+    await f.send(fox, "Finish this request");
+    await expect.poll(async () => (await f.retries(fox)).length, { timeout: 20_000 }).toBe(2);
+    const retries = await f.retries(fox);
+    expect(retries[0].text).toContain("retry 1 of 2");
+    expect(retries[1].text).toContain("retry 2 of 2");
+    await expect.poll(async () => (await f.reports()).length, { timeout: 20_000 }).toBe(1);
+    expect((await f.reports())[0].text).toContain("already resumed that thread by itself 2 times");
+    expect(f.state(fox)).toMatchObject({ attempts: 2, started: 2 });
+    expect(f.state(fox)?.pending).toBeUndefined();
     await f.health();
   } finally { await f.close(); }
 }, 120_000);

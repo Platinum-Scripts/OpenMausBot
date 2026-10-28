@@ -85,12 +85,13 @@ export function createChiefNotices(deps: ChiefNoticeDeps) {
 
   /** The one way a teammate's stopped thread runs again: a Chief's retry_thread and OpenMausBot's automatic retry both
    * start it here, after the same refusal checks. Throws the refusal, or why the start failed. */
-  async function retryThread(input: { chief: BotRecord; bot: BotRecord; threadId: string; unattended: boolean; note?: string; automatic?: true; sendId?: string }): Promise<void> {
+  async function retryThread(input: { chief: BotRecord; bot: BotRecord; threadId: string; unattended: boolean; note?: string; automatic?: true; sendId?: string; attempt?: number; max?: number }): Promise<void> {
     const refused = retryRefusal(input.bot.id, input.threadId);
     if (refused) throw new Error(refused);
     const chief = peerName(input.chief.name);
+    const budget = input.attempt !== undefined && input.max !== undefined && input.max > 1 ? `retry ${input.attempt} of ${input.max}` : "once";
     const lead = input.automatic
-      ? `${AUTO_RETRY_LEAD}, once, before telling ${chief}, your Chief of Staff, that this thread's last run failed.`
+      ? `${AUTO_RETRY_LEAD}, ${budget}, before telling ${chief}, your Chief of Staff, that this thread's last run failed.`
       : `${RETRY_LEAD}${chief}, your Chief of Staff, after this thread's last run stopped.${input.note ? ` Note from ${chief}: ${quoteInNote(input.note, 300)}` : ""}`;
     await deps.startTurn(input.bot.id, `${lead} Continue the request above from where it stopped and finish it. If the same problem comes back, say exactly what is blocking and stop.]`,
       { threadId: input.threadId, unattended: input.unattended, sendId: input.sendId,
@@ -197,7 +198,7 @@ export function createChiefNotices(deps: ChiefNoticeDeps) {
       state.attempts += 1;
       p.phase = "dispatching";
       if (!journal.save(state)) return;
-      void retryThread({ chief, bot, threadId, unattended: true, automatic: true, sendId: p.id }).then(() => guarded(() => {
+      void retryThread({ chief, bot, threadId, unattended: true, automatic: true, sendId: p.id, attempt: state.attempts, max: policy.max }).then(() => guarded(() => {
           const current = journal.get(threadId);
           if (current?.pending?.id !== p.id || current.pending.phase !== "dispatching") return;
           current.started += 1;
@@ -313,7 +314,8 @@ export function createChiefNotices(deps: ChiefNoticeDeps) {
       const chief = candidate && reachesChief(candidate, bot, threadId) ? candidate : null;
       const auto = input.kind === "failed" ? autoRetry() : null;
       const answered = path.findLast((line) => line.role === "user")?.text ?? "";
-      const retry = auto && chief && !answered.startsWith(RETRY_LEAD) && retriesTeammateThread(input.detail, input.facts)
+      const manualRetry = answered.startsWith(RETRY_LEAD) && !answered.startsWith(AUTO_RETRY_LEAD);
+      const retry = auto && chief && !manualRetry && retriesTeammateThread(input.detail, input.facts)
         && !state.uncertain && !store.groupByThread(threadId) && state.attempts < auto.max;
       if (state.uncertain) count.mayRetry = false;
       if (!retry && count.muted) return;
