@@ -57,8 +57,8 @@ describe("OpenMausBot's own retry of a teammate's stopped thread", () => {
     expect(f.timers[0]!.delayMs).toBeGreaterThanOrEqual(119_999);
     expect(f.timers[0]!.delayMs).toBeLessThanOrEqual(120_000);
     f.fire();
-    await Promise.resolve();
-    expect(f.calls()).toEqual([{ botId: "fox", threadId: "fox-sweep", text: expect.stringMatching(/^\[Auto-retry from OpenMausBot for Chief, your Chief of Staff, .*automatic retry 1 of 1/) }]);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(f.calls()).toEqual([{ botId: "fox", threadId: "fox-sweep", text: expect.stringMatching(/^\[Retry requested by OpenMausBot, automatically, once, before telling Chief, your Chief of Staff,/) }]);
     expect(f.startTurn.mock.calls[0]![2]).toMatchObject({ unattended: true, peerAsk: { botId: "chief", unattended: true } });
 
     // The resumed run stops too: the retry is used up, so the Chief hears, and is told what was already tried.
@@ -102,7 +102,7 @@ describe("OpenMausBot's own retry of a teammate's stopped thread", () => {
     expect(f.startTurn).not.toHaveBeenCalled();
 
     let enabled = true;
-    const disabled = fixture({ retryPolicy: () => enabled ? { max: 1 } : undefined });
+    const disabled = fixture({ retryPolicy: () => enabled ? { max: 1 } : { threads: false } });
     disabled.fail();
     enabled = false;
     disabled.fire();
@@ -148,10 +148,19 @@ describe("OpenMausBot's own retry of a teammate's stopped thread", () => {
     expect(f.calls()[1]!.text).toContain("OpenMausBot's automatic retry could not confirm its start; the reserved attempt remains used.");
   });
 
-  it("is off when the host does not turn it on, as before: the Chief hears at once", () => {
-    const f = fixture({ retryPolicy: () => undefined });
+  it("is off when thread retries are explicitly disabled: the Chief hears at once", () => {
+    const f = fixture({ retryPolicy: () => ({ threads: false }) });
     f.fail();
     expect(f.timers).toEqual([]);
     expect(f.calls().map((call) => call.botId)).toEqual(["chief"]);
+  });
+
+  it("keeps upstream's one immediate retry when no explicit policy exists", async () => {
+    const f = fixture({ retryPolicy: () => undefined });
+    f.fail();
+    expect(f.timers.map((timer) => timer.delayMs)).toEqual([0]);
+    f.fire();
+    await Promise.resolve();
+    expect(f.calls().map((call) => call.botId)).toEqual(["fox"]);
   });
 });

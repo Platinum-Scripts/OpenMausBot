@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
+import { AUTO_RETRY_LEAD } from "../incidents.ts";
 import { launchRestartableServer } from "../testing/restartable-server.ts";
 import type { ChiefRetryState } from "./chief-retry-journal.ts";
 
@@ -46,7 +47,8 @@ async function fixture(delayMinutes = 0) {
   };
   const messages = async (thread: string) => (await api("GET", `/api/threads/${thread}/messages?limit=200`)).messages as any[];
   const send = (bot: any, text: string) => api("POST", `/api/bots/${bot.id}/messages`, { text, threadId: bot.threadId });
-  const retries = async (bot: any) => (await messages(bot.threadId)).filter(line => line.role === "user" && line.peerAsk && line.text?.startsWith("[Auto-retry from OpenMausBot"));
+  const retries = async (bot: any) => (await messages(bot.threadId)).filter(line => line.role === "user" && line.peerAsk
+    && (line.text?.startsWith(AUTO_RETRY_LEAD) || line.text?.startsWith("[Auto-retry from OpenMausBot")));
   const reports = async () => {
     const bots = (await api("GET", "/api/bots?messages=0")).bots;
     const task = bots.find((b: any) => b.id === chief.id).tasks.find((t: any) => t.title === "Team incidents");
@@ -90,7 +92,7 @@ it("bounds retries beyond the notice hour and opens a fresh budget only for a ne
     const gate = join(f.dataDir, "retry-release");
     f.plan(fox.id, { script: [
       { key: "request", match: ["First request"], failWith: "Synthetic task failure" },
-      { key: "retry", match: ["[Auto-retry"], repeat: true, readyFile: ready, gateFile: gate, failWith: "Synthetic retry failure" },
+      { key: "retry", match: ["OpenMausBot"], repeat: true, readyFile: ready, gateFile: gate, failWith: "Synthetic retry failure" },
       { key: "new-request", match: ["New request"], failWith: "Synthetic new failure" },
     ] });
     await f.send(fox, "First request");

@@ -30,8 +30,8 @@ export interface ChiefNoticeDeps {
   groupTurnActive(botId: string): boolean;
   startTurn(botId: string, text: string, opts: { threadId: string; unattended?: boolean; peerAsk: PeerAsk; sendId?: string }): Promise<unknown>;
   escalationsEnabled(): boolean;
-  /** config.json "retryOnFailure": a teammate's failed or stalled thread is resumed before its Chief hears of it unless
-   * "threads" is false. Absent leaves every retry to the Chief, as before. */
+  /** A failed teammate thread gets one immediate retry by default. config.json "retryOnFailure" can change the budget
+   * and delay, or set "threads" to false to leave every retry to the Chief. */
   retryPolicy?(): (Partial<RoutineRetryPolicy> & { threads?: boolean }) | undefined;
   /** The thread's last run has ended but is still shutting down. */
   threadSettling?(threadId: string): boolean;
@@ -85,7 +85,7 @@ export function createChiefNotices(deps: ChiefNoticeDeps) {
 
   /** The one way a teammate's stopped thread runs again: a Chief's retry_thread and OpenMausBot's automatic retry both
    * start it here, after the same refusal checks. Throws the refusal, or why the start failed. */
-  async function retryThread(input: { chief: BotRecord; bot: BotRecord; threadId: string; unattended: boolean; note?: string; automatic?: true }): Promise<void> {
+  async function retryThread(input: { chief: BotRecord; bot: BotRecord; threadId: string; unattended: boolean; note?: string; automatic?: true; sendId?: string }): Promise<void> {
     const refused = retryRefusal(input.bot.id, input.threadId);
     if (refused) throw new Error(refused);
     const chief = peerName(input.chief.name);
@@ -93,7 +93,8 @@ export function createChiefNotices(deps: ChiefNoticeDeps) {
       ? `${AUTO_RETRY_LEAD}, once, before telling ${chief}, your Chief of Staff, that this thread's last run failed.`
       : `${RETRY_LEAD}${chief}, your Chief of Staff, after this thread's last run stopped.${input.note ? ` Note from ${chief}: ${quoteInNote(input.note, 300)}` : ""}`;
     await deps.startTurn(input.bot.id, `${lead} Continue the request above from where it stopped and finish it. If the same problem comes back, say exactly what is blocking and stop.]`,
-      { threadId: input.threadId, unattended: input.unattended, peerAsk: { botId: input.chief.id, name: input.chief.name, ...(input.unattended ? { unattended: true } : {}) } });
+      { threadId: input.threadId, unattended: input.unattended, sendId: input.sendId,
+        peerAsk: { botId: input.chief.id, name: input.chief.name, ...(input.unattended ? { unattended: true } : {}) } });
   }
 
   function incidentRefused(chief: BotRecord, incidentsThreadId: string, asks: ReadonlyArray<Message["peerAsk"]>, why: string): void {
@@ -114,10 +115,11 @@ export function createChiefNotices(deps: ChiefNoticeDeps) {
     }
   }
 
-  /** Off unless config.json sets "retryOnFailure"; then on unless its "threads" is false. */
+  /** Upstream's one immediate retry is the default; an explicit policy can delay, change the budget or opt out. */
   function autoRetry(): { max: number; delayMs: number } | null {
     const configured = deps.retryPolicy?.();
-    if (!configured || configured.threads === false) return null;
+    if (configured === undefined) return { max: 1, delayMs: 0 };
+    if (configured.threads === false) return null;
     const { max, delayMinutes } = resolveRetryPolicy(configured);
     return max > 0 ? { max, delayMs: delayMinutes * 60_000 } : null;
   }
@@ -195,11 +197,7 @@ export function createChiefNotices(deps: ChiefNoticeDeps) {
       state.attempts += 1;
       p.phase = "dispatching";
       if (!journal.save(state)) return;
-      const text = `[Auto-retry from OpenMausBot for ${peerName(chief.name)}, your Chief of Staff, after this thread's last run stopped ` +
-        `(automatic retry ${state.attempts} of ${policy.max}). Continue the request above from where it stopped and finish it. ` +
-        "If the same problem comes back, say exactly what is blocking and stop.]";
-      void deps.startTurn(bot.id, text, { threadId, sendId: p.id, unattended: true,
-        peerAsk: { botId: chief.id, name: chief.name, unattended: true } }).then(() => guarded(() => {
+      void retryThread({ chief, bot, threadId, unattended: true, automatic: true, sendId: p.id }).then(() => guarded(() => {
           const current = journal.get(threadId);
           if (current?.pending?.id !== p.id || current.pending.phase !== "dispatching") return;
           current.started += 1;
@@ -226,7 +224,8 @@ export function createChiefNotices(deps: ChiefNoticeDeps) {
       if (journal.save(state)) arm(state);
       return;
     }
-    const context = incidentContext(path.filter(line => !(line.peerAsk?.unattended && line.text?.startsWith("[Auto-retry from OpenMausBot for "))));
+    const context = incidentContext(path.filter(line => !(line.peerAsk?.unattended
+      && (line.text?.startsWith(AUTO_RETRY_LEAD) || line.text?.startsWith("[Auto-retry from OpenMausBot for ")))));
     const incident: Incident = { kind: p.kind, bot, threadId, title: task?.title ?? null, room: group?.name ?? null, detail: p.detail,
       lastRequest: context.lastRequest ? redactSecretsInText(context.lastRequest) : null,
       lastReply: context.lastReply ? redactSecretsInText(context.lastReply) : null };
@@ -302,7 +301,7 @@ export function createChiefNotices(deps: ChiefNoticeDeps) {
       if (!state) {
         const after = boundary ? path.slice(path.indexOf(boundary) + 1) : path;
         const legacy = after.filter(line => line.role === "user" && line.peerAsk?.unattended
-          && line.text?.startsWith("[Auto-retry from OpenMausBot for ")).length;
+          && (line.text?.startsWith(AUTO_RETRY_LEAD) || line.text?.startsWith("[Auto-retry from OpenMausBot for "))).length;
         state = { threadId, botId: bot.id, boundaryId: boundary?.id ?? null, boundaryAt: boundary?.at ?? 0,
           attempts: legacy, started: legacy, revision: 0 };
       }

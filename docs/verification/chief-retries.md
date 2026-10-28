@@ -53,7 +53,7 @@ loopback samples under one fake-engine workload, not production capacity evidenc
   pre-journal retry messages conservatively seed the initial budget.
 - Attempts are consumed before dispatch. Confirmed starts and unconfirmed reserved
   attempts are counted separately. No failed/ambiguous dispatch refunds a slot.
-- Recovery rechecks opt-in, max and delay, bot/task existence, archive status,
+- Recovery rechecks the current retry policy, max and delay, bot/task existence, archive status,
   Chief identity, audience, quiet/private routing, assignment, room membership,
   cancellation, newer user messages, successful progress, queue, settling and
   capacity. Busy work stays durably pending and is checked again after five seconds.

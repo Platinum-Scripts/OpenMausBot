@@ -54,9 +54,9 @@ export function resolveRetryPolicy(workspace?: Partial<RoutineRetryPolicy>, own?
   return { ...base, ...retryPolicyFields(workspace), ...retryPolicyFields(own) };
 }
 
-/** How a failed or timed-out run starts again by itself, for every routine (a routine's own fields win) and for a
- * teammate's thread that failed or stalled. Off while absent: a passing error gets one retry and a run limit is final,
- * as before. Once set (even `{}`), absent fields mean max 1, delayMinutes 2, onTimeout "resume", threads on. */
+/** How a failed or timed-out routine starts again by itself, and how a teammate thread's default one immediate retry
+ * can be changed or disabled. Routine defaults stay legacy while absent; once set (even `{}`), absent fields mean
+ * max 1, delayMinutes 2, onTimeout "resume", threads on. */
 export const retryOnFailureConfigSchema = z.object({
   max: z.number().int().min(0).max(RETRY_MAX_LIMIT).optional(),
   delayMinutes: z.number().int().min(0).max(RETRY_DELAY_LIMIT_MINUTES).optional(),

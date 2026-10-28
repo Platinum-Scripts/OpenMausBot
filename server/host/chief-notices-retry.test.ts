@@ -86,7 +86,7 @@ describe("OpenMausBot's one automatic retry of a teammate's failed thread", () =
     const f = fixture();
     f.store.appendMessage("ada-job", { role: "user", kind: "text", text: "Reconcile the September invoices." });
     f.notices.reportIncident({ kind: "failed", bot: f.ada as never, threadId: "ada-job", detail: CRASH });
-    expect(f.turnsOf("ada")).toEqual([{ threadId: "ada-job", text: expect.stringMatching(/^\[Auto-retry from OpenMausBot for Clive, your Chief of Staff,/) }]);
+    expect(f.turnsOf("ada")).toEqual([{ threadId: "ada-job", text: expect.stringMatching(/^\[Retry requested by OpenMausBot, automatically, once, before telling Clive, your Chief of Staff,/) }]);
     expect(f.turnsOf("ada")[0]!.text).toContain("Continue the request above from where it stopped and finish it.");
     expect(f.turnsOf("chief")).toEqual([]);
     await new Promise((resolve) => setImmediate(resolve));
