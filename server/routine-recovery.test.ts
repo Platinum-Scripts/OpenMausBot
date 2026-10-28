@@ -125,6 +125,8 @@ describe("classifyRoutineFailure", () => {
     [CRASH, { cause: "refused" }, { kind: "final" }],
     [SIGNED_OUT, { cause: "refused" }, { kind: "owner", cause: "signed_out" }],
     ["xAI hit a rate limit (HTTP 429). Wait a minute, then run it again.", { cause: "refused" }, { kind: "retry", cause: "rate_limited" }],
+    [ROUTING, { stopReason: "interrupted" }, { kind: "final" }],
+    [ROUTING, { stopReason: "cancelled" }, { kind: "final" }],
   ])("%s", (failure, facts, verdict) => {
     expect(classifyRoutineFailure(failure, facts)).toEqual(verdict);
   });
@@ -435,6 +437,238 @@ describe("a run that OpenMausBot's shutdown cuts off", () => {
     expect(h.started.map((turn) => turn.threadId)).toEqual(["thread-1", "thread-1"]);
     expect(h.started[1]!.prompt).toContain(retryNote("restarted"));
     expect(h.runs()).toHaveLength(1);
+  });
+});
+
+describe("a run that reaches its run limit", () => {
+  const LIMIT = "Stopped after reaching the 10-minute run limit";
+  const limited = (h: ReturnType<typeof harness>, retryOnFailure?: Parameters<RoutineManager["create"]>[0]["retryOnFailure"]) =>
+    h.manager.create({ name: "Inbox sweep", prompt: "Sweep the inbox", botId: "maus-1", timeoutMinutes: 10,
+      schedule: { type: "daily", time: "09:00", weekdays: [3] }, ...(retryOnFailure ? { retryOnFailure } : {}) });
+  const interrupting = (extra: Partial<RoutineManagerOptions> = {}) => {
+    const interrupted: string[] = [];
+    // config.json "retryOnFailure": {} — the policy with its defaults.
+    const h = harness({ interruptTurn: async (_botId, threadId) => { interrupted.push(threadId); }, threadSettled: () => true, retryPolicy: () => ({}), ...extra });
+    return Object.assign(h, { interrupted });
+  };
+
+  it("fails as before when neither config.json nor the routine asks for automatic retries", async () => {
+    const h = interrupting({ retryPolicy: () => undefined });
+    const run = await h.start(limited(h).id);
+    await h.advance(10 * MINUTE);
+    expect(h.run(run.id)).toMatchObject({ status: "failed", error: LIMIT });
+    expect(h.run(run.id)).not.toHaveProperty("retried");
+    await h.advance(10 * MINUTE);
+    expect(h.started).toHaveLength(1);
+  });
+
+  it("lets one routine ask for it while the workspace leaves it off", async () => {
+    const h = interrupting({ retryPolicy: () => undefined });
+    const run = await h.start(limited(h, { max: 1 }).id);
+    await h.advance(10 * MINUTE);
+    expect(h.run(run.id)).toMatchObject({ status: "queued", retried: "timeout", retries: 1 });
+  });
+
+  it("continues once in its own thread with a fresh run limit, then gives up and reports", async () => {
+    const h = interrupting();
+    const run = await h.start(limited(h).id);
+    await h.advance(10 * MINUTE);
+    expect(h.run(run.id)).toMatchObject({ status: "queued", retried: "timeout", retries: 1, threadId: "thread-1", retryAt: START + 12 * MINUTE });
+    expect(h.run(run.id).attention).toMatch(/^Reached its run limit; continuing in its own thread with a fresh 10-minute run limit at /);
+    expect(h.interrupted).toEqual(["thread-1"]);
+    expect(h.failed).toEqual([]);
+    // The interrupted turn's own end belongs to the stopped start, not the queued one.
+    h.event("thread-1", { type: "turn.completed", ok: false, stopReason: "interrupted" });
+    expect(h.run(run.id).status).toBe("queued");
+
+    await h.advance(MINUTE);
+    expect(h.started).toHaveLength(1);
+    await h.advance(MINUTE);
+    expect(h.started.map((turn) => turn.threadId)).toEqual(["thread-1", "thread-1"]);
+    expect(h.started[1]!.prompt).toBe(`${h.started[0]!.prompt}\n\n${retryNote("timeout")}`);
+    expect(retryNote("timeout")).toMatch(/^\[Auto-retry from OpenMausBot: /);
+    expect(h.run(run.id)).toMatchObject({ status: "running", startedAt: START + 12 * MINUTE });
+
+    await h.advance(9 * MINUTE);
+    expect(h.run(run.id).status).toBe("running");
+    await h.advance(MINUTE);
+    expect(h.run(run.id)).toMatchObject({ status: "failed", retried: "timeout", retries: 1, error: `${LIMIT} (after 1 automatic retry)` });
+    expect(h.failed.map(({ run: failed }) => failed.id)).toEqual([run.id]);
+    expect(h.interrupted).toEqual(["thread-1", "thread-1"]);
+    await h.advance(10 * MINUTE);
+    expect(h.started).toHaveLength(2);
+    expect(h.tasks()).toBe(1);
+  });
+
+  it("starts over in a new thread when the routine says rerun, and the workspace default can allow two", async () => {
+    const h = interrupting({ retryPolicy: () => ({ max: 2, delayMinutes: 0 }) });
+    const run = await h.start(limited(h, { onTimeout: "rerun" }).id);
+    // No delay: the same tick that stops it starts it over, in a thread of its own.
+    await h.advance(10 * MINUTE);
+    expect(h.run(run.id)).toMatchObject({ status: "running", retried: "timeout", retries: 1, threadId: "thread-2" });
+    expect(h.interrupted).toEqual(["thread-1"]);
+    await h.advance(10 * MINUTE);
+    expect(h.started.map((turn) => turn.threadId)).toEqual(["thread-1", "thread-2", "thread-3"]);
+    await h.advance(10 * MINUTE);
+    expect(h.run(run.id)).toMatchObject({ status: "failed", retries: 2, error: `${LIMIT} (after 2 automatic retries)` });
+    expect(h.failed).toHaveLength(1);
+  });
+
+  it.each([{ max: 0 }, { onTimeout: "off" as const }, null])("honors routine policy revocation during the delay: %j", async (policy) => {
+    const h = interrupting({ retryPolicy: () => undefined });
+    const routine = limited(h, {});
+    const run = await h.start(routine.id);
+    await h.advance(10 * MINUTE);
+    h.manager.update(routine.id, { retryOnFailure: policy });
+    await h.advance(2 * MINUTE);
+    expect(h.run(run.id)).toMatchObject({ status: "cancelled", error: "Not retried: the current retry policy no longer permits this attempt" });
+    expect(h.started).toHaveLength(1);
+  });
+
+  it("honors workspace policy revocation during the delay", async () => {
+    let policy: { max?: number } | undefined = {};
+    const h = interrupting({ retryPolicy: () => policy });
+    const run = await h.start(limited(h).id);
+    await h.advance(10 * MINUTE);
+    policy = undefined;
+    await h.advance(2 * MINUTE);
+    expect(h.run(run.id).status).toBe("cancelled");
+    expect(h.started).toHaveLength(1);
+  });
+
+  it("keeps supersession protection after opt-out", async () => {
+    const h = interrupting({ retryPolicy: () => undefined });
+    const routine = limited(h, {});
+    const run = await h.start(routine.id);
+    await h.advance(10 * MINUTE);
+    const newer = await h.start(routine.id);
+    h.manager.update(routine.id, { retryOnFailure: null });
+    await h.advance(2 * MINUTE);
+    expect(h.run(run.id)).toMatchObject({ status: "cancelled", error: "Not retried: a newer run of this routine is already running" });
+    expect(h.run(newer.id).status).toBe("running");
+    expect(h.started).toHaveLength(2);
+  });
+
+  it("fails closed and retains the old identity when interruption rejects", async () => {
+    const h = interrupting({ interruptTurn: async () => { throw new Error("interrupt failed"); } });
+    const run = await h.start(limited(h, { onTimeout: "rerun", delayMinutes: 0 }).id);
+    await h.advance(10 * MINUTE);
+    expect(h.run(run.id)).toMatchObject({ status: "failed", threadId: "thread-1", error: "Not retried: could not interrupt the previous execution" });
+    await h.advance(2 * MINUTE);
+    expect(h.started).toHaveLength(1);
+    expect(h.tasks()).toBe(1);
+  });
+
+  it.each([false, true])("waits for shutdown before rerun, including reload=%s", async (reload) => {
+    let settled = false;
+    const h = interrupting({ threadSettled: () => settled });
+    const run = await h.start(limited(h, { onTimeout: "rerun", delayMinutes: 0 }).id);
+    await h.advance(10 * MINUTE);
+    expect(h.run(run.id)).toMatchObject({ status: "queued", threadId: "thread-1", timeoutPending: true });
+    h.event("thread-1", { type: "turn.completed", ok: false, stopReason: "interrupted" });
+    if (reload) h.restart();
+    await h.advance(MINUTE);
+    expect(h.started).toHaveLength(1);
+    expect(h.tasks()).toBe(1);
+    settled = true;
+    await h.advance(MINUTE);
+    expect(h.run(run.id)).toMatchObject({ status: "running", threadId: "thread-2" });
+    expect(h.run(run.id).timeoutPending).toBeUndefined();
+    expect(h.started).toHaveLength(2);
+  });
+
+  it("does not treat an absent settlement probe as permission to rerun", async () => {
+    const h = interrupting({ threadSettled: undefined });
+    const run = await h.start(limited(h, { onTimeout: "rerun", delayMinutes: 0 }).id);
+    await h.advance(10 * MINUTE);
+    expect(h.run(run.id)).toMatchObject({ status: "queued", threadId: "thread-1" });
+    expect(h.started).toHaveLength(1);
+  });
+
+  it("uses the current timeout mode once the previous execution settles", async () => {
+    let settled = false;
+    const h = interrupting({ threadSettled: () => settled });
+    const routine = limited(h, { onTimeout: "rerun", delayMinutes: 0 });
+    const run = await h.start(routine.id);
+    await h.advance(10 * MINUTE);
+    h.manager.update(routine.id, { retryOnFailure: { onTimeout: "resume", delayMinutes: 0 } });
+    settled = true;
+    await h.advance(MINUTE);
+    expect(h.run(run.id)).toMatchObject({ status: "running", threadId: "thread-1" });
+    expect(h.tasks()).toBe(1);
+  });
+
+  it("fails at once when the routine turns timeout retries off", async () => {
+    const h = interrupting();
+    const run = await h.start(limited(h, { onTimeout: "off" }).id);
+    await h.advance(10 * MINUTE);
+    expect(h.run(run.id)).toMatchObject({ status: "failed", error: LIMIT });
+    expect(h.run(run.id)).not.toHaveProperty("retried");
+  });
+
+  it("never starts again a run its owner cancelled or stopped", async () => {
+    const h = interrupting();
+    const routine = limited(h);
+    const cancelled = await h.start(routine.id);
+    await h.manager.cancelRun(cancelled.id);
+    await h.advance(20 * MINUTE);
+    expect(h.run(cancelled.id).status).toBe("cancelled");
+
+    const stopped = await h.start(routine.id);
+    h.fail(stopped.threadId!, ROUTING, { stopReason: "interrupted" });
+    expect(h.run(stopped.id)).toMatchObject({ status: "failed", error: ROUTING });
+    expect(h.run(stopped.id)).not.toHaveProperty("retried");
+    await h.advance(20 * MINUTE);
+    expect(h.started.map((turn) => turn.threadId)).toEqual(["thread-1", "thread-2"]);
+  });
+
+  it("skips its retry when a newer run of the routine is already running", async () => {
+    const h = interrupting();
+    const routine = limited(h);
+    const first = await h.start(routine.id);
+    await h.advance(10 * MINUTE);
+    expect(h.run(first.id)).toMatchObject({ status: "queued", retried: "timeout" });
+    const newer = await h.start(routine.id);
+    expect(h.run(newer.id)).toMatchObject({ status: "running", threadId: "thread-2" });
+
+    await h.advance(2 * MINUTE);
+    expect(h.run(first.id)).toMatchObject({ status: "cancelled", error: "Not retried: a newer run of this routine is already running" });
+    expect(h.started.map((turn) => turn.threadId)).toEqual(["thread-1", "thread-2"]);
+    expect(h.failed).toEqual([]);
+  });
+
+  it("does not retry a routine whose last three runs failed too, and says why", async () => {
+    const h = interrupting();
+    const routine = limited(h);
+    for (let failures = 0; failures < 3; failures++) {
+      const run = await h.start(routine.id);
+      h.fail(run.threadId!, "The bot did not finish", { stopReason: "interrupted" });
+    }
+    const run = await h.start(routine.id);
+    await h.advance(10 * MINUTE);
+    expect(h.run(run.id)).toMatchObject({ status: "failed", error: `${LIMIT}. Not retried: its last 3 runs failed too` });
+  });
+
+  it("keeps an empty routine opt-in through reload and retries a timeout without workspace defaults", async () => {
+    const h = interrupting({ retryPolicy: () => undefined });
+    const routine = limited(h, {});
+    expect(routine.retryOnFailure).toEqual({});
+    expect(h.restart().listRoutines().find((candidate) => candidate.id === routine.id)?.retryOnFailure).toEqual({});
+    const run = await h.start(routine.id);
+    await h.advance(10 * MINUTE);
+    expect(h.run(run.id)).toMatchObject({ status: "queued", retried: "timeout", retries: 1 });
+    await h.advance(2 * MINUTE);
+    expect(h.run(run.id)).toMatchObject({ status: "running", threadId: run.threadId, retries: 1 });
+  });
+
+  it("checks a routine's own retry fields, and keeps them across a restart", async () => {
+    const h = interrupting();
+    expect(() => limited(h, { max: 3 })).toThrow(/0 to 2/);
+    expect(() => limited(h, { onTimeout: "again" as never })).toThrow(/resume, rerun or off/);
+    const routine = limited(h, { max: 2, onTimeout: "rerun" });
+    expect(routine.retryOnFailure).toEqual({ max: 2, onTimeout: "rerun" });
+    expect(h.restart().listRoutines().find((candidate) => candidate.id === routine.id)?.retryOnFailure).toEqual({ max: 2, onTimeout: "rerun" });
+    expect(h.manager.update(routine.id, { retryOnFailure: null })).not.toHaveProperty("retryOnFailure");
   });
 });
 

@@ -1,9 +1,18 @@
-import { describe, expect, it, vi } from "vitest";
+import { ChiefRetryJournal } from "./chief-retry-journal.ts";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { TRIAL_CREDIT_REFUSED } from "../../shared/trial-credit.ts";
 import { AUTO_RETRY_LEAD, RETRY_BLOCKED } from "../incidents.ts";
 import type { RoutineFailureFacts } from "../routine-recovery.ts";
 import { createChiefNotices, type ChiefNoticeDeps } from "./chief-notices.ts";
+
+const journals: ChiefRetryJournal[] = [];
+afterEach(() => { for (const journal of journals.splice(0)) journal.close(); });
+function retryJournal() {
+  const journal = new ChiefRetryJournal(":memory:");
+  journals.push(journal);
+  return journal;
+}
 
 function fixture(over: Partial<ChiefNoticeDeps> = {}) {
   const bots = [
@@ -12,6 +21,7 @@ function fixture(over: Partial<ChiefNoticeDeps> = {}) {
   ];
   const lines = new Map<string, Array<Record<string, unknown>>>();
   let made = 0;
+  let lineMade = 0;
   const store = {
     bots, bot: (id: string) => bots.find((one) => one.id === id),
     tasks: (id: string) => bots.find((one) => one.id === id)?.tasks ?? [],
@@ -23,7 +33,7 @@ function fixture(over: Partial<ChiefNoticeDeps> = {}) {
       return task;
     },
     appendMessage: (threadId: string, row: Record<string, unknown>) => {
-      const line = { ...row, at: Date.now() };
+      const line = { id: `line-${++lineMade}`, ...row, at: Date.now() };
       lines.set(threadId, [...(lines.get(threadId) ?? []), line]);
       return line;
     },
@@ -31,12 +41,14 @@ function fixture(over: Partial<ChiefNoticeDeps> = {}) {
     activePath: (threadId: string) => lines.get(threadId) ?? [],
   };
   // As the host's startTurn does, the turn's own message lands in its thread first.
-  const startTurn = vi.fn(async (_botId: string, text: string, opts: { threadId: string; peerAsk?: unknown }) => {
-    store.appendMessage(opts.threadId, { role: "user", kind: "text", text, peerAsk: opts.peerAsk });
+  const startTurn = vi.fn(async (_botId: string, text: string, opts: { threadId: string; peerAsk?: unknown; sendId?: string }) => {
+    store.appendMessage(opts.threadId, { role: "user", kind: "text", text, peerAsk: opts.peerAsk, sendId: opts.sendId });
   });
   const notices = createChiefNotices({
+    retryJournal: retryJournal(),
     store: store as never, notify: () => {}, threadBusy: () => false, botAtThreadCapacity: () => false,
-    groupTurnActive: () => false, startTurn, assignerOf: () => undefined, escalationsEnabled: () => true, schedule: (run) => run(), ...over,
+    groupTurnActive: () => false, startTurn, assignerOf: () => undefined, escalationsEnabled: () => true,
+    retryPolicy: () => ({ max: 1, delayMinutes: 0 }), schedule: (run) => run(), ...over,
   });
   const turnsOf = (botId: string) => startTurn.mock.calls.filter(([id]) => id === botId).map(([, text, opts]) => ({ text, threadId: opts.threadId }));
   return { notices, store, startTurn, turnsOf, chief: bots[0]!, ada: bots[1]! };
@@ -67,16 +79,17 @@ describe("why a Chief's retry of a teammate's thread is refused", () => {
 
 const CRASH = "claude exited 3 before result: fake-claude: simulated crash before result";
 const DENIED = "One or more tool operations failed or were denied. See the tool results; the final response is not an execution receipt.";
-const RETRIED = "OpenMausBot already retried this run once by itself; the failure above is how that retry ended.";
+const RETRIED = "OpenMausBot already resumed that thread by itself once, and it stopped again.";
 
 describe("OpenMausBot's one automatic retry of a teammate's failed thread", () => {
-  it("runs the thread once more before its Chief hears, then tells the Chief how that retry ended, and never retries the retry", () => {
+  it("runs the thread once more before its Chief hears, then tells the Chief how that retry ended, and never retries the retry", async () => {
     const f = fixture();
     f.store.appendMessage("ada-job", { role: "user", kind: "text", text: "Reconcile the September invoices." });
     f.notices.reportIncident({ kind: "failed", bot: f.ada as never, threadId: "ada-job", detail: CRASH });
     expect(f.turnsOf("ada")).toEqual([{ threadId: "ada-job", text: expect.stringMatching(/^\[Retry requested by OpenMausBot, automatically, once, before telling Clive, your Chief of Staff,/) }]);
     expect(f.turnsOf("ada")[0]!.text).toContain("Continue the request above from where it stopped and finish it.");
     expect(f.turnsOf("chief")).toEqual([]);
+    await new Promise((resolve) => setImmediate(resolve));
 
     // The retry fails too: the Chief hears now, with the original request, and nothing is retried again.
     f.notices.reportIncident({ kind: "failed", bot: f.ada as never, threadId: "ada-job", detail: CRASH });
@@ -121,18 +134,15 @@ describe("OpenMausBot's one automatic retry of a teammate's failed thread", () =
   });
 
   it("tells the Chief when its retry could not start", async () => {
-    let busy = false;
-    const waiting: Array<() => void> = [];
-    const f = fixture({ threadBusy: (botId) => busy && botId === "ada", schedule: (run) => { waiting.push(run); } });
+    const f = fixture();
+    f.startTurn.mockRejectedValueOnce(new Error(RETRY_BLOCKED.running));
     f.notices.reportIncident({ kind: "failed", bot: f.ada as never, threadId: "ada-job", detail: CRASH });
-    busy = true;
-    waiting.shift()!();
     await new Promise((resolve) => setImmediate(resolve));
-    expect(f.turnsOf("ada")).toEqual([]);
-    expect(f.turnsOf("chief")[0]!.text).toContain(`OpenMausBot did not retry it: its retry could not start (${RETRY_BLOCKED.running}).`);
+    expect(f.turnsOf("ada")).toHaveLength(1);
+    expect(f.turnsOf("chief")[0]!.text).toContain("OpenMausBot's automatic retry could not confirm its start; the reserved attempt remains used.");
   });
 
-  it("tells the Chief, without retrying, when someone wrote in the thread since it failed", () => {
+  it("cancels its retry when someone wrote in the thread since it failed", () => {
     vi.useFakeTimers({ now: 10_000 });
     try {
       const waiting: Array<() => void> = [];
@@ -142,7 +152,7 @@ describe("OpenMausBot's one automatic retry of a teammate's failed thread", () =
       f.store.appendMessage("ada-job", { role: "user", kind: "text", text: "Never mind, I did it myself." });
       waiting.shift()!();
       expect(f.turnsOf("ada")).toEqual([]);
-      expect(f.turnsOf("chief")[0]!.text).toContain("OpenMausBot did not retry it: someone wrote in that thread since.");
+      expect(f.turnsOf("chief")).toEqual([]);
     } finally {
       vi.useRealTimers();
     }

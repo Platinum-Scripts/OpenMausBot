@@ -4283,6 +4283,7 @@
   "routines.retried.rate_limited": "Retried after a rate limit · {status}",
   "routines.retried.provider": "Retried after a temporary error · {status}",
   "routines.retried.usage_limit": "Ran after the usage limit reset · {status}",
+  "routines.retried.timeout": "Retried after reaching its run limit · {status}",
   "routines.retried.failed": "Retried after a failure · {status}",
   "routines.goal.completed": "Completed",
   "routines.goal.needs-input": "Needs your input",

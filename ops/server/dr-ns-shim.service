@@ -1,0 +1,9 @@
+[Unit]
+Description=ops hotfix 2026-10-26: DiscountRouter namespace shim for codex (OpenMausBot)
+After=network-online.target
+[Service]
+ExecStart=/usr/bin/python3 /opt/omb-ops/dr-ns-shim.py
+Restart=always
+RestartSec=2
+[Install]
+WantedBy=multi-user.target

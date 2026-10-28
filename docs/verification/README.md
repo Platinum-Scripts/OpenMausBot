@@ -270,6 +270,10 @@ The [provider recovery recipe](provider-recovery.md) verifies real Grok image
 transport and Claude authentication against loopback APIs, plus scoped thread
 approvals and provider safety errors in an isolated desktop UI.
 
+The [Chief retry durability fixture](chief-retries.md) checks bounded thread retry
+budgets beyond the notice hour, delayed retry and notice recovery across restarts,
+and fail-closed policy, routing, progress and storage checks with an isolated server.
+
 The [automatic recovery fixture](automatic-recovery.md) checks opt-in, one-shot
 backup model dispatch after proven pre-prompt ACP failures, preserving the
 conversation, approval level and Stop/new-message precedence.

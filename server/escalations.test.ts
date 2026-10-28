@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { ChiefRetryJournal } from "./host/chief-retry-journal.ts";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { chiefOfStaffSystemPrompt } from "./chief-of-staff.ts";
 import { createChiefNotices } from "./host/chief-notices.ts";
@@ -16,6 +17,14 @@ import {
   type Escalation,
   type EscalationBot,
 } from "./escalations.ts";
+
+const journals: ChiefRetryJournal[] = [];
+afterEach(() => { for (const journal of journals.splice(0)) journal.close(); });
+function retryJournal() {
+  const journal = new ChiefRetryJournal(":memory:");
+  journals.push(journal);
+  return journal;
+}
 
 const FENCE = /^\[.+ from OpenMausBot — not from the person\. .+\]$/;
 
@@ -124,6 +133,7 @@ describe("ESCALATIONS_THREAD_TITLE", () => {
 describe("opt-in", () => {
   const untouched = new Proxy({}, { get: (_, key) => () => { throw new Error(`store.${String(key)} was read with escalations off`); } });
   const notices = (enabled: boolean, assigner?: unknown) => createChiefNotices({
+    retryJournal: retryJournal(),
     store: untouched as never, notify: () => { throw new Error("notified"); }, threadBusy: () => false, botAtThreadCapacity: () => false,
     groupTurnActive: () => false, startTurn: async () => undefined, assignerOf: () => assigner, escalationsEnabled: () => enabled,
   });
@@ -153,10 +163,11 @@ describe("a person's private chat on a Team Cloud", () => {
     const notified: unknown[] = [], written: unknown[] = [];
     const store = {
       bots: [chief, mira], bot: (id: string) => [chief, mira].find((entry) => entry.id === id), tasks: () => [],
-      taskByThread: () => ({ threadId: "th_mira", title: "Ada's interview prep" }), groupByThread: () => undefined, messagesFor: () => [],
+      taskByThread: () => ({ threadId: "th_mira", title: "Ada's interview prep" }), groupByThread: () => undefined, messagesFor: () => [], activePath: () => [],
       createTask: () => ({ threadId: "th_chief_notices", title: "notices" }), appendMessage: (threadId: string, message: unknown) => { written.push({ threadId, message }); },
     };
     const notices = createChiefNotices({
+    retryJournal: retryJournal(),
       store: store as never, notify: (notification) => { notified.push(notification); }, threadBusy: () => false, botAtThreadCapacity: () => false,
       groupTurnActive: () => false, startTurn: async () => undefined, assignerOf: () => undefined, escalationsEnabled: () => true,
       ...(privateThread ? { privateThread } : {}),
