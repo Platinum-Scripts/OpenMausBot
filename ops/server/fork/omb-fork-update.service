@@ -1,0 +1,7 @@
+[Unit]
+Description=OpenMausBot fork: fetch upstream, rebase deploy, build, test, push, deploy with health check + auto-rollback
+After=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/opt/omb-ops/omb-fork-update.sh update
+TimeoutStartSec=3h

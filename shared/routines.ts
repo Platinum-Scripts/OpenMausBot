@@ -91,11 +91,29 @@ export type RoutineRunStatus =
   | "cancelled"
   | "missed";
 
-/** Why a run started a second time by itself: its engine stalled, OpenMausBot
+/** Why a run started again by itself: its engine stalled, OpenMausBot
  * restarted while it ran, the provider rate-limited it or failed for a moment,
- * it waited for its engine's usage limit to reset, or it failed some other way.
- * A run gets one. */
-export type RoutineRetryCause = "stalled" | "restarted" | "rate_limited" | "provider" | "usage_limit" | "failed";
+ * it waited for its engine's usage limit to reset, failed some other way, or reached its run limit. */
+export type RoutineRetryCause = "stalled" | "restarted" | "rate_limited" | "provider" | "usage_limit" | "failed" | "timeout";
+
+/** What happens to a run that reached its run limit: "resume" continues it in
+ * its own thread with a fresh run limit, "rerun" starts it over in a new
+ * thread, "off" fails it. */
+export type RoutineTimeoutRetry = "resume" | "rerun" | "off";
+
+/** How a run that failed or reached its run limit starts again on its own,
+ * without anyone asking. `config.json` "retryOnFailure" is the default for
+ * every routine; a routine's own `retryOnFailure` replaces the fields it sets.
+ * A run its owner stopped, or a routine that kept failing, never retries. */
+export interface RoutineRetryPolicy {
+  /** Automatic starts a run gets after its first, 0 to 2. 0 also turns off
+   * the retry after a passing error. */
+  max: number;
+  /** Minutes before a run that reached its run limit starts again, 0 to 60. A
+   * passing error keeps its own short wait. */
+  delayMinutes: number;
+  onTimeout: RoutineTimeoutRetry;
+}
 
 /** The statuses both failure indicators count: a run that went wrong and has
  * not been acknowledged. */
@@ -124,6 +142,8 @@ export interface Routine {
   /** Optional wall-clock safety limit. Missing means the run is unlimited. */
   timeoutMinutes?: number;
   overlap?: "skip" | "queue";
+  /** This routine's own retry fields; the rest come from config.json "retryOnFailure". */
+  retryOnFailure?: Partial<RoutineRetryPolicy>;
   /** Each run starts with the previous run's report. */
   continuity?: boolean;
   /** Also run once each time OpenMausBot starts. */
@@ -183,8 +203,10 @@ export interface RoutineRun {
   finishedAt?: number;
   output?: string;
   error?: string;
-  /** Set when the run used its one automatic second start, and why. */
+  /** Set when the run started again by itself, and why its last start ended. */
   retried?: RoutineRetryCause;
+  /** How many times it started again by itself; absent with `retried` means once. */
+  retries?: number;
   /** Concise, redacted question or approval reason while status is waiting,
    * or why a queued run starts later. */
   attention?: string;
@@ -212,6 +234,8 @@ export interface RoutineInput {
   /** `null` explicitly removes the limit; omission preserves it on updates. */
   timeoutMinutes?: number | null;
   overlap?: "skip" | "queue";
+  /** `null` removes the routine's own retry fields on updates; omission preserves them. */
+  retryOnFailure?: Partial<RoutineRetryPolicy> | null;
   /** Each run starts with the previous run's report. */
   continuity?: boolean;
   runOnStartup?: boolean;

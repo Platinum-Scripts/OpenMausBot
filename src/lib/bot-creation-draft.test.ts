@@ -28,6 +28,18 @@ describe("isolated creation draft", () => {
     expect(network).not.toHaveBeenCalled();
   });
 
+  it("preserves retry policy on unrelated edits and clears it only on explicit null", async () => {
+    const draft = new BotCreationDraft(EMPTY_BOT_DEFAULTS, vi.fn());
+    await draft.request("/api/routines", { method: "POST", body: JSON.stringify({ botId: draft.id,
+      name: "Status", prompt: "Check status", schedule: { type: "once", at: 123456789 }, retryOnFailure: {} }) });
+    const path = `/api/routines/${draft.routines[0].id}`;
+    const edit = { botId: draft.id, name: "Updated status", prompt: "Check status", schedule: { type: "once", at: 123456789 } };
+    await draft.request(path, { method: "PATCH", body: JSON.stringify(edit) });
+    expect(draft.routines[0].retryOnFailure).toEqual({});
+    await draft.request(path, { method: "PATCH", body: JSON.stringify({ ...edit, retryOnFailure: null }) });
+    expect(draft.routines[0].retryOnFailure).toBeUndefined();
+  });
+
   it("makes independent copies and new routine identities for every draft", () => {
     const defaults = { ...EMPTY_BOT_DEFAULTS, profile: { name: "Default" }, routines: [{
       name: "Status", prompt: "Check status", enabled: false, schedule: { type: "once" as const, at: 123456789 },

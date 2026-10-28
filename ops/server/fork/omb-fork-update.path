@@ -1,0 +1,7 @@
+[Unit]
+Description=OpenMausBot fork: run the update pipeline when a bot touches /home/maus/omb-builds/update-request
+[Path]
+PathChanged=/home/maus/omb-builds/update-request
+Unit=omb-fork-update.service
+[Install]
+WantedBy=multi-user.target

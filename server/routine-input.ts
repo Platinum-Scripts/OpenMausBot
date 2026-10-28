@@ -2,6 +2,7 @@
 import { runsOnce } from "../shared/limit-reset.ts";
 import { cleanAttachments, cleanTimeoutMinutes } from "./routine-attachments.ts";
 import { loadChecks } from "./routine-load.ts";
+import { retryPolicyFields } from "./routine-retry-policy.ts";
 import { cleanSchedule } from "./routine-schedules.ts";
 import type { Routine, RoutineInput } from "./routines.ts";
 
@@ -35,6 +36,7 @@ export function sanitizeInput(input: RoutineInput, after: number): Omit<Routine,
   if (continuity && target === "room-goal") {
     throw new Error("Room goals do not carry continuity yet");
   }
+  const retryOnFailure = retryPolicyFields(input.retryOnFailure, true);
   const schedule = cleanSchedule(input.schedule, after);
   const asked = Array.isArray(input.checks) && input.checks.length === 0 ? null : input.checks;
   const checks = asked == null ? undefined : loadChecks(asked);
@@ -56,6 +58,7 @@ export function sanitizeInput(input: RoutineInput, after: number): Omit<Routine,
     attachments,
     ...(continuity ? { continuity: true } : {}),
     ...(input.overlap === "queue" ? { overlap: "queue" as const } : {}),
+    ...(retryOnFailure ? { retryOnFailure } : {}),
     ...(input.runOnStartup === true && !runsOnce(schedule) ? { runOnStartup: true } : {}),
     ...(checks ? { checks } : {}),
     ...(input.access === "read-and-draft" ? { access: "read-and-draft" as const } : {}),
