@@ -478,12 +478,14 @@ export function EngineSetup({
   intent = "cloud",
   unframed = false,
   description: descriptionOverride,
+  quiet = false,
 }: {
   instance: InstanceInfo;
   className?: string;
   intent?: "cloud" | "inject";
   unframed?: boolean;
   description?: string;
+  quiet?: boolean;
 }) {
   const { state } = useStore();
   const cloudHome = state.config?.cloudHome === true;
@@ -550,11 +552,16 @@ export function EngineSetup({
         </div>
       </div>
 
-      {instance.snapshot.state === "unavailable" && instance.snapshot.reason && (
+      {instance.snapshot.state === "unavailable" && instance.snapshot.reason && (quiet ? (
+        <details data-engine-setup-reason className="mt-2 text-[12px] leading-4 text-ink-tertiary">
+          <summary className="cursor-pointer select-none hover:text-ink-secondary">{t("engineSetup.details")}</summary>
+          <p className="mt-1 whitespace-pre-wrap">{instance.snapshot.reason}</p>
+        </details>
+      ) : (
         <p role="alert" className="mt-2 text-[12px] leading-relaxed text-danger">
           {instance.snapshot.reason}
         </p>
-      )}
+      ))}
 
       {deviceSignIn || browserSignIn ? (
         <>

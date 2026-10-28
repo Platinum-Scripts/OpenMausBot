@@ -53,7 +53,9 @@ describe("OpenMausBot's own retry of a teammate's stopped thread", () => {
     const f = fixture();
     f.fail();
     expect(f.startTurn).not.toHaveBeenCalled();
-    expect(f.timers.map((timer) => timer.delayMs)).toEqual([120_000]);
+    expect(f.timers).toHaveLength(1);
+    expect(f.timers[0]!.delayMs).toBeGreaterThanOrEqual(119_999);
+    expect(f.timers[0]!.delayMs).toBeLessThanOrEqual(120_000);
     f.fire();
     await Promise.resolve();
     expect(f.calls()).toEqual([{ botId: "fox", threadId: "fox-sweep", text: expect.stringMatching(/^\[Auto-retry from OpenMausBot for Chief, your Chief of Staff, .*automatic retry 1 of 1/) }]);

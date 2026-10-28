@@ -245,7 +245,7 @@ function ConversationTaskPicker({
       </button>
 
       {motion.shown && (
-        <div className={cn("absolute right-0 top-full z-40 mt-1 w-[300px] overflow-hidden rounded-xl border border-hairline/50 bg-card py-1 shadow-2xl shadow-black/50", motion.className)} {...motion.exitProps}>
+        <div className={cn("popover-surface absolute right-0 top-full z-40 mt-1 w-[300px] overflow-hidden rounded-xl border border-hairline/50 bg-card py-1 shadow-2xl shadow-black/50", motion.className)} {...motion.exitProps}>
           <div className="px-2 pb-1 pt-1.5">
             <div className="flex items-center gap-2 rounded-lg border border-hairline/40 bg-inset px-2.5 py-1.5 focus-within:border-focus">
               <Search size={13} className="shrink-0 text-ink-secondary" />

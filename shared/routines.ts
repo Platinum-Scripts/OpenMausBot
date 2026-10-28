@@ -93,8 +93,8 @@ export type RoutineRunStatus =
 
 /** Why a run started again by itself: its engine stalled, OpenMausBot
  * restarted while it ran, the provider rate-limited it or failed for a moment,
- * it waited for its engine's usage limit to reset, or it reached its run limit. */
-export type RoutineRetryCause = "stalled" | "restarted" | "rate_limited" | "provider" | "usage_limit" | "timeout";
+ * it waited for its engine's usage limit to reset, failed some other way, or reached its run limit. */
+export type RoutineRetryCause = "stalled" | "restarted" | "rate_limited" | "provider" | "usage_limit" | "failed" | "timeout";
 
 /** What happens to a run that reached its run limit: "resume" continues it in
  * its own thread with a fresh run limit, "rerun" starts it over in a new

@@ -36,14 +36,16 @@ const CALL_ENDPOINT_MS = 850;
  * composer's own button: two buttons answering it would start two calls. */
 export type CallButtonPlacement = "header" | "composer" | "panel";
 
-/** `fill` (Simple composer): a round button in that colour, with no chevron; the + menu picks the call mode. */
+/** `fill` (Simple composer): a round button in that colour with its glyph in `ink`, and no chevron; the + menu picks the
+ * call mode. */
 /** `inverse` (phone composer): a round ink-coloured button with an app-coloured glyph: white on Midnight, dark on Meadow. */
-export function CallButton({ bot, placement = "header", fill, inverse }: { bot: Bot; placement?: CallButtonPlacement; fill?: string; inverse?: boolean }) {
+export function CallButton({ bot, placement = "header", fill, ink, inverse }: { bot: Bot; placement?: CallButtonPlacement; fill?: string; ink?: string; inverse?: boolean }) {
   const { state } = useStore();
   return (
     <CallTargetButton
       placement={placement}
       fill={fill}
+      ink={ink}
       inverse={inverse}
       targetId={bot.id}
       targetName={bot.name}
@@ -68,10 +70,12 @@ export function CallTargetButton({
   onStart,
   placement = "header",
   fill,
+  ink = "#ffffff",
   inverse,
 }: {
   placement?: CallButtonPlacement;
   fill?: string;
+  ink?: string;
   inverse?: boolean;
   targetId: string;
   targetName: string;
@@ -250,17 +254,17 @@ export function CallTargetButton({
         aria-label={label}
         title={label}
         data-call-button={placement}
-        style={fill && !active ? { backgroundColor: fill } : undefined}
+        style={fill && !active ? { backgroundColor: fill, color: ink } : undefined}
         className={cn(
           "relative flex shrink-0 items-center justify-center disabled:opacity-60",
           round ? "rounded-full transition-[color,background,filter]" : "rounded-l-3xl rounded-r-lg active:rounded-3xl transition-[color,background,border-radius]",
-          composer || placement === "panel" ? "size-8" : "size-9",
+          composer && fill ? "size-7" : composer || placement === "panel" ? "size-8" : "size-9",
           active
             ? "bg-danger text-white hover:brightness-110"
             : inverse
               ? "bg-ink text-app hover:opacity-90 max-md:size-9"
             : fill
-              ? "text-white hover:brightness-110"
+              ? "hover:brightness-110"
             : placement === "panel"
               ? unavailable ? "bg-ink/[0.06] text-ink-tertiary hover:text-ink-secondary" : "bg-ink/[0.06] text-ink hover:bg-ink/[0.11]"
             : composer
@@ -274,7 +278,7 @@ export function CallTargetButton({
       >
         {active
           ? <PhoneOff size={composer || round ? 15 : 17} />
-          : composer ? <AudioLines size={16} aria-hidden="true" /> : <Phone size={round ? 15 : 17} />}
+          : composer ? fill ? <AudioLines size={15} strokeWidth={1.75} absoluteStrokeWidth aria-hidden="true" /> : <AudioLines size={16} aria-hidden="true" /> : <Phone size={round ? 15 : 17} />}
         {unavailable && (
           <span className="absolute right-1 top-1 size-1.5 rounded-full bg-warning ring-2 ring-app" aria-hidden="true" />
         )}
@@ -414,7 +418,7 @@ export function CallModeMenu({ id, mode, onChoose, onClose, placement = "header"
         if (event.key === "Tab") onClose();
         else navigateThreadMenu(event);
       }}
-      className={cn("animate-pop-in absolute right-0 z-30 w-[280px] rounded-xl border border-hairline bg-panel p-1.5 text-left shadow-2xl space-y-1", placement === "composer" ? "bottom-full mb-1.5" : "top-full mt-1.5")}
+      className={cn("popover-surface animate-pop-in absolute right-0 z-30 w-[280px] rounded-xl border border-hairline bg-panel p-1.5 text-left shadow-2xl space-y-1", placement === "composer" ? "bottom-full mb-1.5" : "top-full mt-1.5")}
     >
       {CALL_MODES.map((entry) => {
         const unavailable = entry.id === "turns" ? turnsUnavailable : null;

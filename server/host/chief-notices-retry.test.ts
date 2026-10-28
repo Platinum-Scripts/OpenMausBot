@@ -1,7 +1,9 @@
 import { ChiefRetryJournal } from "./chief-retry-journal.ts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { RETRY_BLOCKED } from "../incidents.ts";
+import { TRIAL_CREDIT_REFUSED } from "../../shared/trial-credit.ts";
+import { AUTO_RETRY_LEAD, RETRY_BLOCKED } from "../incidents.ts";
+import type { RoutineFailureFacts } from "../routine-recovery.ts";
 import { createChiefNotices, type ChiefNoticeDeps } from "./chief-notices.ts";
 
 const journals: ChiefRetryJournal[] = [];
@@ -19,6 +21,7 @@ function fixture(over: Partial<ChiefNoticeDeps> = {}) {
   ];
   const lines = new Map<string, Array<Record<string, unknown>>>();
   let made = 0;
+  let lineMade = 0;
   const store = {
     bots, bot: (id: string) => bots.find((one) => one.id === id),
     tasks: (id: string) => bots.find((one) => one.id === id)?.tasks ?? [],
@@ -30,20 +33,25 @@ function fixture(over: Partial<ChiefNoticeDeps> = {}) {
       return task;
     },
     appendMessage: (threadId: string, row: Record<string, unknown>) => {
-      const line = { ...row, at: Date.now() };
+      const line = { id: `line-${++lineMade}`, ...row, at: Date.now() };
       lines.set(threadId, [...(lines.get(threadId) ?? []), line]);
       return line;
     },
     messagesFor: (threadId: string) => lines.get(threadId) ?? [],
     activePath: (threadId: string) => lines.get(threadId) ?? [],
   };
-  const startTurn = vi.fn(async (_botId: string, _text: string, _opts: { threadId: string }) => undefined);
+  // As the host's startTurn does, the turn's own message lands in its thread first.
+  const startTurn = vi.fn(async (_botId: string, text: string, opts: { threadId: string; peerAsk?: unknown; sendId?: string }) => {
+    store.appendMessage(opts.threadId, { role: "user", kind: "text", text, peerAsk: opts.peerAsk, sendId: opts.sendId });
+  });
   const notices = createChiefNotices({
     retryJournal: retryJournal(),
     store: store as never, notify: () => {}, threadBusy: () => false, botAtThreadCapacity: () => false,
-    groupTurnActive: () => false, startTurn, assignerOf: () => undefined, escalationsEnabled: () => true, ...over,
+    groupTurnActive: () => false, startTurn, assignerOf: () => undefined, escalationsEnabled: () => true,
+    retryPolicy: () => ({ max: 1, delayMinutes: 0 }), schedule: (run) => run(), ...over,
   });
-  return { notices, store, startTurn, ada: bots[1]! };
+  const turnsOf = (botId: string) => startTurn.mock.calls.filter(([id]) => id === botId).map(([, text, opts]) => ({ text, threadId: opts.threadId }));
+  return { notices, store, startTurn, turnsOf, chief: bots[0]!, ada: bots[1]! };
 }
 
 describe("why a Chief's retry of a teammate's thread is refused", () => {
@@ -66,5 +74,91 @@ describe("why a Chief's retry of a teammate's thread is refused", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+const CRASH = "claude exited 3 before result: fake-claude: simulated crash before result";
+const DENIED = "One or more tool operations failed or were denied. See the tool results; the final response is not an execution receipt.";
+const RETRIED = "OpenMausBot already resumed that thread by itself once, and it stopped again.";
+
+describe("OpenMausBot's one automatic retry of a teammate's failed thread", () => {
+  it("runs the thread once more before its Chief hears, then tells the Chief how that retry ended, and never retries the retry", async () => {
+    const f = fixture();
+    f.store.appendMessage("ada-job", { role: "user", kind: "text", text: "Reconcile the September invoices." });
+    f.notices.reportIncident({ kind: "failed", bot: f.ada as never, threadId: "ada-job", detail: CRASH });
+    expect(f.turnsOf("ada")).toEqual([{ threadId: "ada-job", text: expect.stringMatching(/^\[Auto-retry from OpenMausBot for Clive, your Chief of Staff,/) }]);
+    expect(f.turnsOf("ada")[0]!.text).toContain("Continue the request above from where it stopped and finish it.");
+    expect(f.turnsOf("chief")).toEqual([]);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // The retry fails too: the Chief hears now, with the original request, and nothing is retried again.
+    f.notices.reportIncident({ kind: "failed", bot: f.ada as never, threadId: "ada-job", detail: CRASH });
+    expect(f.turnsOf("ada")).toHaveLength(1);
+    const [told] = f.turnsOf("chief");
+    expect(told!.text).toContain(RETRIED);
+    expect(told!.text).toContain('The request there was: "Reconcile the September invoices."');
+    expect(told!.text).toContain("retry_thread");
+  });
+
+  it("never retries a stall the turn watchdog stopped: the Chief hears at once", () => {
+    const f = fixture();
+    f.notices.reportIncident({ kind: "stalled", bot: f.ada as never, threadId: "ada-job", detail: "no activity for 20 minutes — the turn was stopped" });
+    expect(f.turnsOf("ada")).toEqual([]);
+    expect(f.turnsOf("chief")).toHaveLength(1);
+    expect(f.turnsOf("chief")[0]!.text).not.toContain(RETRIED);
+  });
+
+  it.each<[string, { detail: string; facts?: RoutineFailureFacts }]>([
+    ["a Stop someone pressed or typed", { detail: CRASH, facts: { stopReason: "interrupted" } }],
+    ["a Stop the engine reported as an error", { detail: "session closed", facts: { stopReason: "cancelled" } }],
+    ["an AI that declined", { detail: "The engine stopped without saying why (stop reason: refusal).", facts: { stopReason: "refusal" } }],
+    ["a tool call the person denied", { detail: DENIED, facts: { stopReason: "tool_error" } }],
+    ["a signed-out AI", { detail: "Not logged in · Please run /login" }],
+    ["a used-up trial credit", { detail: TRIAL_CREDIT_REFUSED.used_up, facts: { setup: true, trialCredit: "used_up" } }],
+    ["a turn cap", { detail: "Stopped after 40 tool calls without a final answer" }],
+  ])("never retries a run ended by %s: the Chief hears at once", (_what, failure) => {
+    const f = fixture();
+    f.notices.reportIncident({ kind: "failed", bot: f.ada as never, threadId: "ada-job", ...failure });
+    expect(f.turnsOf("ada")).toEqual([]);
+    expect(f.turnsOf("chief")).toHaveLength(1);
+  });
+
+  it("leaves a run that answered the Chief's own retry to the Chief", async () => {
+    const f = fixture();
+    await f.notices.retryThread({ chief: f.chief as never, bot: f.ada as never, threadId: "ada-job", unattended: true, note: "The service was down." });
+    expect(f.turnsOf("ada")[0]!.text).toBe("[Retry requested by Clive, your Chief of Staff, after this thread's last run stopped. Note from Clive: The service was down. " +
+      "Continue the request above from where it stopped and finish it. If the same problem comes back, say exactly what is blocking and stop.]");
+    f.notices.reportIncident({ kind: "failed", bot: f.ada as never, threadId: "ada-job", detail: CRASH });
+    expect(f.turnsOf("ada")).toHaveLength(1);
+    expect(f.turnsOf("chief")).toHaveLength(1);
+  });
+
+  it("tells the Chief when its retry could not start", async () => {
+    const f = fixture();
+    f.startTurn.mockRejectedValueOnce(new Error(RETRY_BLOCKED.running));
+    f.notices.reportIncident({ kind: "failed", bot: f.ada as never, threadId: "ada-job", detail: CRASH });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(f.turnsOf("ada")).toHaveLength(1);
+    expect(f.turnsOf("chief")[0]!.text).toContain("OpenMausBot's automatic retry could not confirm its start; the reserved attempt remains used.");
+  });
+
+  it("cancels its retry when someone wrote in the thread since it failed", () => {
+    vi.useFakeTimers({ now: 10_000 });
+    try {
+      const waiting: Array<() => void> = [];
+      const f = fixture({ schedule: (run) => { waiting.push(run); } });
+      f.notices.reportIncident({ kind: "failed", bot: f.ada as never, threadId: "ada-job", detail: CRASH });
+      vi.setSystemTime(11_000);
+      f.store.appendMessage("ada-job", { role: "user", kind: "text", text: "Never mind, I did it myself." });
+      waiting.shift()!();
+      expect(f.turnsOf("ada")).toEqual([]);
+      expect(f.turnsOf("chief")).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("opens its retry with a lead the delivered-note rules know, so the request it retries stays the thread's request", () => {
+    expect(AUTO_RETRY_LEAD.startsWith("[Retry requested by ")).toBe(true);
   });
 });

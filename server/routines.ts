@@ -1130,7 +1130,7 @@ export class RoutineManager {
         try {
           const prompt = run.prompt ?? this.routines.find((r) => r.id === run.routineId)?.prompt;
           if (!prompt) {
-            this.failThread(task.threadId, "The routine was deleted before it could start");
+            this.failThread(task.threadId, "The routine was deleted before it could start", { cause: "refused" });
             continue;
           }
           const triggerSource = run.triggerSource ?? (run.manual ? "manual" : "schedule");
@@ -1145,7 +1145,7 @@ export class RoutineManager {
               prompt,
               run.botId,
               run.id,
-              (message) => this.failThread(task.threadId, message),
+              (message) => this.failThread(task.threadId, message, { cause: "refused" }),
             );
           } else {
             await this.options.startTurn(
@@ -1154,7 +1154,7 @@ export class RoutineManager {
               composeExecutionPrompt({ name: run.routineName, trigger: triggerSource, runOn: run.runOn ?? "maus" }, prompt, run.attachments, continuityCarry(run, this.routines, this.runs), run.retried),
               run.runOn ?? "maus",
               triggerSource,
-              (message) => this.failThread(task.threadId, message),
+              (message) => this.failThread(task.threadId, message, { cause: "refused" }),
             );
           }
         } catch (error) {

@@ -8,7 +8,7 @@ import type { CloudAccountState, CloudPlanSnapshot } from "../../electron/cloud-
 import type { CloudOffer, CloudTrial } from "../../electron/cloud-home.mjs";
 import { withTourFinished } from "@/lib/guided-tour";
 import { setLocale } from "@/lib/i18n";
-import { EMPTY_ONBOARDING, LOCAL_VIEWER, markWelcomeFinished, type WelcomeViewer } from "@/lib/onboarding";
+import { EMPTY_ONBOARDING, LOCAL_VIEWER, markWelcomeFinished, MET_CHIEF_HINT, type WelcomeViewer } from "@/lib/onboarding";
 import { launchDialogShown, markLaunchDialog } from "@/lib/launch-dialogs";
 import { setPendingIntent } from "@/lib/cloud-intent";
 import { createDesktopPrefs, registerDesktopPrefs } from "../../electron/desktop-prefs.mjs";
@@ -322,6 +322,25 @@ describe("the free trial's notice, here and on My Cloud", () => {
     expect(bridges.cloud.offer).not.toHaveBeenCalled();
     snapshot = new Error("only available in this app's window");
     expect(await launch()).toBe("");
+  });
+});
+
+describe("the first conversation after meeting the Chief", () => {
+  it("holds every corner notice, an account's own too, until the person has written and had a reply", async () => {
+    const running = trial("active");
+    account = paid({ trial: running }); snapshot = { status: "paid", tier: "pro", trial: running, notice: "active" };
+    f.state.config.onboarding.hintsSeen = [...withTourFinished(undefined), MET_CHIEF_HINT];
+    f.state.bots = [{ tasks: [{ threadId: "first", usage: { turns: 0 } }] }];
+    expect(await launch()).toBe("");
+    f.state.bots = structuredClone(FIRST_REPLY);
+    expect(await launch()).toContain("Your free trial ends on");
+  });
+
+  it("changes nothing for an install whose first run came before: its notices keep their own rules", async () => {
+    const running = trial("active");
+    account = paid({ trial: running }); snapshot = { status: "paid", tier: "pro", trial: running, notice: "active" };
+    f.state.bots = [{ tasks: [{ threadId: "first", usage: { turns: 0 } }] }];
+    expect(await launch()).toContain("Your free trial ends on");
   });
 });
 

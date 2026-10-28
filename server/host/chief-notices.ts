@@ -3,10 +3,15 @@ import { ChiefRetryJournal, type ChiefRetryState } from "./chief-retry-journal.t
 import { failedTurnTool } from "../../shared/failed-turn.ts";
 import { admit } from "../admission.ts";
 import { ESCALATIONS_THREAD_TITLE, EscalationLedger, escalationChip, escalationDeliverable, escalationText, type Escalation, type EscalationKind } from "../escalations.ts";
-import { chiefForBot, INCIDENTS_THREAD_TITLE, IncidentLedger, incidentChip, incidentContext, incidentText, RETRY_BLOCKED, type Incident, type IncidentKind } from "../incidents.ts";
+import {
+  AUTO_RETRY_LEAD, chiefForBot, INCIDENTS_THREAD_TITLE, IncidentLedger, incidentChip, incidentContext, incidentText, RETRY_BLOCKED, RETRY_LEAD,
+  type Incident, type IncidentKind,
+} from "../incidents.ts";
 import { buildNotification, type Notification } from "../notify.ts";
+import { quoteInNote } from "../peer-provenance.ts";
 import { peerName } from "../peer-roster.ts";
 import { redactSecretsInText } from "../redact.ts";
+import { retriesTeammateThread, type RoutineFailureFacts } from "../routine-recovery.ts";
 import { resolveRetryPolicy } from "../routine-retry-policy.ts";
 import { queueSteeredMessage } from "../steer-queue.ts";
 import type { BotRecord, Message, Store } from "../store.ts";
@@ -23,7 +28,7 @@ export interface ChiefNoticeDeps {
   threadBusy(botId: string, threadId: string): boolean;
   botAtThreadCapacity(botId: string): boolean;
   groupTurnActive(botId: string): boolean;
-  startTurn(botId: string, text: string, opts: { threadId: string; unattended: true; peerAsk: PeerAsk; sendId?: string }): Promise<unknown>;
+  startTurn(botId: string, text: string, opts: { threadId: string; unattended?: boolean; peerAsk: PeerAsk; sendId?: string }): Promise<unknown>;
   escalationsEnabled(): boolean;
   /** config.json "retryOnFailure": a teammate's failed or stalled thread is resumed before its Chief hears of it unless
    * "threads" is false. Absent leaves every retry to the Chief, as before. */
@@ -76,6 +81,19 @@ export function createChiefNotices(deps: ChiefNoticeDeps) {
       return "that thread has finished a run since it was reported — there is nothing to retry; read what it did before deciding anything else";
     }
     return null;
+  }
+
+  /** The one way a teammate's stopped thread runs again: a Chief's retry_thread and OpenMausBot's automatic retry both
+   * start it here, after the same refusal checks. Throws the refusal, or why the start failed. */
+  async function retryThread(input: { chief: BotRecord; bot: BotRecord; threadId: string; unattended: boolean; note?: string; automatic?: true }): Promise<void> {
+    const refused = retryRefusal(input.bot.id, input.threadId);
+    if (refused) throw new Error(refused);
+    const chief = peerName(input.chief.name);
+    const lead = input.automatic
+      ? `${AUTO_RETRY_LEAD}, once, before telling ${chief}, your Chief of Staff, that this thread's last run failed.`
+      : `${RETRY_LEAD}${chief}, your Chief of Staff, after this thread's last run stopped.${input.note ? ` Note from ${chief}: ${quoteInNote(input.note, 300)}` : ""}`;
+    await deps.startTurn(input.bot.id, `${lead} Continue the request above from where it stopped and finish it. If the same problem comes back, say exactly what is blocking and stop.]`,
+      { threadId: input.threadId, unattended: input.unattended, peerAsk: { botId: input.chief.id, name: input.chief.name, ...(input.unattended ? { unattended: true } : {}) } });
   }
 
   function incidentRefused(chief: BotRecord, incidentsThreadId: string, asks: ReadonlyArray<Message["peerAsk"]>, why: string): void {
@@ -266,7 +284,7 @@ export function createChiefNotices(deps: ChiefNoticeDeps) {
     return "chief";
   }
 
-  function reportIncident(input: { kind: IncidentKind; bot: BotRecord; threadId: string; detail: string }): void {
+  function reportIncident(input: { kind: IncidentKind; bot: BotRecord; threadId: string; detail: string; facts?: RoutineFailureFacts }): void {
     guarded(() => {
       const { bot, threadId } = input;
       if (deps.quietThread?.(bot.id, threadId) || deps.assignerOf(threadId)) return;
@@ -294,8 +312,10 @@ export function createChiefNotices(deps: ChiefNoticeDeps) {
       // Suppression controls notices, never the durable retry budget.
       const candidate = chiefForBot(store.bots, bot);
       const chief = candidate && reachesChief(candidate, bot, threadId) ? candidate : null;
-      const auto = input.kind === "failed" || input.kind === "stalled" ? autoRetry() : null;
-      const retry = auto && chief && !state.uncertain && !store.groupByThread(threadId) && state.attempts < auto.max;
+      const auto = input.kind === "failed" ? autoRetry() : null;
+      const answered = path.findLast((line) => line.role === "user")?.text ?? "";
+      const retry = auto && chief && !answered.startsWith(RETRY_LEAD) && retriesTeammateThread(input.detail, input.facts)
+        && !state.uncertain && !store.groupByThread(threadId) && state.attempts < auto.max;
       if (state.uncertain) count.mayRetry = false;
       if (!retry && count.muted) return;
       state.pending = { id: randomUUID(), phase: retry ? "retry" : "report", chiefId: chief?.id ?? null,
@@ -341,5 +361,5 @@ export function createChiefNotices(deps: ChiefNoticeDeps) {
   }
 
   guarded(() => { for (const state of journal.pending()) arm(state); });
-  return { reportIncident, reportEscalation, incidentRefused, retryRefusal };
+  return { reportIncident, reportEscalation, incidentRefused, retryRefusal, retryThread };
 }
